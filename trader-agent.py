@@ -21,6 +21,13 @@ except ImportError:
     print("Error: The 'ta' library is not installed. Please run: pip install ta")
     exit()
 
+# Additional library for candlestick pattern recognition
+try:
+    import tulipy as ti
+except ImportError:
+    print("Note: tulipy library is not installed. Some advanced candlestick patterns may not be available.")
+    ti = None
+
 # --- CONFIGURATION (UPDATE THESE OR USE ENVIRONMENT VARIABLES) ---
 
 # It is highly recommended to set these as environment variables for security:
@@ -443,6 +450,126 @@ def calculate_order_blocks(df, min_body_ratio=0.6, lookback_period=20):
     
     return order_blocks
 
+def detect_candlestick_patterns(df):
+    """
+    Detect candlestick patterns that may indicate potential bull run ending patterns.
+    Includes outside bar engulfing, evening star, and gravestone doji patterns.
+    """
+    if df.empty:
+        return []
+    
+    df = df.copy()
+    df['body'] = abs(df['c'] - df['o'])  # Candle body size
+    df['range'] = abs(df['h'] - df['l'])  # Total candle range
+    df['body_ratio'] = df['body'] / df['range']  # Ratio of body to total range
+    df['is_bullish'] = df['c'] > df['o']
+    df['is_bearish'] = df['c'] < df['o']
+    
+    patterns = []
+    
+    # Detect outside bar/engulfing patterns
+    # An outside bar occurs when the current candle's range completely engulfs the previous candle's range
+    for i in range(1, len(df)):
+        current = df.iloc[i]
+        prev = df.iloc[i - 1]
+        
+        # Outside bar - current candle's high > previous candle's high AND current candle's low < previous candle's low
+        if current['h'] > prev['h'] and current['l'] < prev['l']:
+            # Determine if it's a bullish or bearish engulfing pattern
+            pattern_type = 'bullish_engulfing' if (current['c'] > current['o'] and prev['c'] < prev['o']) else 'bearish_engulfing'
+            if current['c'] > current['o'] and prev['c'] < prev['o']:
+                pattern_type = 'bullish_engulfing'
+            elif current['c'] < current['o'] and prev['c'] > prev['o']:
+                pattern_type = 'bearish_engulfing'
+            else:
+                pattern_type = 'outside_bar'
+            
+            pattern = {
+                'pattern_type': pattern_type,
+                'candle_index': i,
+                'timeframe': 'current',
+                'strength': 'high' if df['body_ratio'].iloc[i] > 0.8 else 'medium',
+                'price': float(current['c']),
+                'description': f"Outside bar pattern detected - current candle completely engulfs previous candle"
+            }
+            patterns.append(pattern)
+    
+    # Detect evening star pattern (bearish reversal pattern)
+    # Three candle pattern: large bullish candle, small-bodied candle (star), large bearish candle
+    for i in range(2, len(df)):
+        third = df.iloc[i]      # Current candle (large bearish)
+        second = df.iloc[i - 1] # Middle candle (star)
+        first = df.iloc[i - 2]  # First candle (large bullish)
+        
+        # Evening star conditions:
+        # 1. First candle is bullish with large body
+        # 2. Second candle gaps up and has small body
+        # 3. Third candle is bearish and closes well into first candle's body
+        first_body = abs(first['c'] - first['o'])
+        second_body = abs(second['c'] - second['o'])
+        third_body = abs(third['c'] - third['o'])
+        
+        first_range = first['h'] - first['l']
+        second_range = second['h'] - second['l']
+        third_range = third['h'] - third['l']
+        
+        # Check if first candle is bullish and has a large body
+        first_bullish_large = first['c'] > first['o'] and first_body / first_range > 0.7
+        
+        # Check if second candle has a small body (star)
+        second_small = second_body / second_range < 0.3
+        
+        # Check if second candle gaps above first candle
+        second_gaps_up = min(second['o'], second['c']) > max(first['o'], first['c'])
+        
+        # Check if third candle is bearish and large
+        third_bearish_large = third['o'] > third['c'] and third_body / third_range > 0.7
+        
+        # Check if third candle closes well into first candle's body
+        third_closes_deep = third['c'] < (first['o'] + first['c']) / 2
+        
+        if first_bullish_large and second_small and second_gaps_up and third_bearish_large and third_closes_deep:
+            pattern = {
+                'pattern_type': 'evening_star',
+                'candle_index': i,
+                'timeframe': 'current',
+                'strength': 'high',
+                'price': float(third['c']),
+                'description': f"Evening star pattern detected - potential bearish reversal after uptrend"
+            }
+            patterns.append(pattern)
+    
+    # Detect gravestone doji - long upper shadow, very small body, little or no lower shadow
+    # This pattern suggests rejection of higher prices and potential reversal
+    for i in range(len(df)):
+        current = df.iloc[i]
+        
+        body_size = abs(current['c'] - current['o'])
+        upper_shadow = current['h'] - max(current['o'], current['c'])
+        lower_shadow = min(current['o'], current['c']) - current['l']
+        total_range = current['h'] - current['l']
+        
+        # Gravestone doji conditions:
+        # 1. Very small body (small portion of total range)
+        # 2. Long upper shadow (significant portion of total range)
+        # 3. Little or no lower shadow
+        is_gravestone = (body_size / total_range < 0.1 and 
+                         upper_shadow / total_range > 0.7 and 
+                         lower_shadow / total_range < 0.1)
+        
+        if is_gravestone:
+            pattern = {
+                'pattern_type': 'gravestone_doji',
+                'candle_index': i,
+                'timeframe': 'current',
+                'strength': 'high',
+                'price': float(current['c']),
+                'description': f"Gravestone doji detected - potential reversal signal at top of trend"
+            }
+            patterns.append(pattern)
+    
+    return patterns
+
 def process_data(market_data: dict, ohlcv_data: dict) -> str:
     """Calculates technical indicators and formats the payload for Gemini. Uses defaults if no OHLCV data."""
 
@@ -527,6 +654,9 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         
         # Calculate volume analytics for LTF
         ltf_volume_analytics = calculate_volume_analytics(df_ltf)
+        
+        # Calculate candlestick patterns for LTF
+        ltf_candlestick_patterns = detect_candlestick_patterns(df_ltf)
 
     # Calculate HTF indicators if HTF data is available
     if htf_data:
@@ -556,6 +686,9 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         
         # Calculate volume analytics for HTF
         htf_volume_analytics = calculate_volume_analytics(df_htf)
+        
+        # Calculate candlestick patterns for HTF
+        htf_candlestick_patterns = detect_candlestick_patterns(df_htf)
 
     # Calculate Daily indicators if Daily data is available
     if daily_data:
@@ -601,6 +734,9 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
             price_change_12h = daily_half_change / 2  # Approximate 12H as half of daily change
         else:
             price_change_12h = 0
+        
+        # Calculate candlestick patterns for Daily
+        daily_candlestick_patterns = detect_candlestick_patterns(df_daily)
 
     # Calculate market structure elements
     current_price = float(market_data.get('value', 0)) if market_data.get('value') is not None else 0
@@ -684,7 +820,7 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         elif isinstance(obj, (int, float)):
             return float(obj)
         elif isinstance(obj, bool):
-            return str(obj)  # Convert booleans to strings
+            return str(obj) # Convert booleans to strings
         elif isinstance(obj, str):
             return obj
         elif obj is None:
@@ -738,6 +874,11 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         "ltf_volume_analytics": ltf_volume_analytics,
         "htf_volume_analytics": htf_volume_analytics,
         "daily_volume_analytics": daily_volume_analytics,
+        
+        # Candlestick Patterns
+        "ltf_candlestick_patterns": ltf_candlestick_patterns,
+        "htf_candlestick_patterns": htf_candlestick_patterns,
+        "daily_candlestick_patterns": daily_candlestick_patterns,
         
         # Additional market structure data
         "market_structure": {
@@ -837,7 +978,8 @@ def generate_trade_signal(analysis_json_string: str) -> dict:
 
     system_prompt = (
         "You are a professional, high-conviction Smart Money Concepts (SMC) trading agent. "
-        "Analyze the provided JSON market data, focusing on liquidity, volume, and momentum (RSI/MACD). "
+        "Analyze the provided JSON market data, focusing on liquidity, volume, momentum (RSI/MACD), and candlestick patterns. "
+        "Pay special attention to bearish engulfing patterns, evening star patterns, and gravestone doji patterns that may indicate the end of a bull run. "
         "Use the last 10 close prices to infer potential market structure shifts, liquidity grabs, or Fair Value Gaps (FVG). "
         "Generate a high-probability trade recommendation for longing (BUY) or shorting (SELL). "
         "Your output MUST be a single JSON object with the keys 'action' (BUY/SELL/HOLD), 'entry_price', 'stop_loss', 'take_profit', 'conviction_score' (1-100), and 'reasoning'."
