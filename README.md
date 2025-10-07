@@ -69,7 +69,7 @@ python trader-agent.py
 Or specify a token and chain:
 
 ```bash
-python trader-agent.py --token BTC --chain ethereum
+python trader-agent.py --token ETH --chain ethereum
 ```
 
 ### Command Line Arguments
@@ -129,10 +129,3 @@ To install all dependencies, run:
 ```bash
 pip install -r requirements.txt
 ```
-
-## Security Notes
-
-- Never commit API keys to version control
-- Use environment variables for sensitive information
-- Hardcoded API keys have been removed from the script for security
-- All API keys must be set in the .env file
