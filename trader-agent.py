@@ -193,6 +193,181 @@ def fetch_birdeye_data(token_address: str, chain: str):
 # 2. DATA PROCESSING AND ANALYSIS FUNCTION
 # ----------------------------------------------------------------------
 
+def calculate_fair_value_gaps(df):
+    """Calculate Fair Value Gaps (FVG) from OHLCV data."""
+    if df.empty:
+        return []
+    
+    # A Fair Value Gap occurs when the previous high is lower than the next low (bullish FVG)
+    # or when the previous low is higher than the next high (bearish FVG)
+    
+    # Create shifted columns to compare current and adjacent candles
+    df = df.copy() # Avoid modifying the original dataframe
+    df['prev_high'] = df['h'].shift(1)
+    df['prev_low'] = df['l'].shift(1)
+    df['next_high'] = df['h'].shift(-1)
+    df['next_low'] = df['l'].shift(-1)
+    
+    # Bullish FVG: current candle's low is higher than previous candle's high
+    # and current candle's high is lower than next candle's low
+    bullish_fvg = df[(df['l'] > df['prev_high']) & (df['h'] < df['next_low'])]
+    
+    # Bearish FVG: current candle's high is lower than previous candle's low
+    # and current candle's low is higher than next candle's high
+    bearish_fvg = df[(df['h'] < df['prev_low']) & (df['l'] > df['next_high'])]
+    
+    fvg_list = []
+    
+    # Add bullish FVGs
+    for idx in bullish_fvg.index:
+        if not pd.isna(idx) and idx < len(df):
+            fvg_list.append({
+                'type': 'bullish',
+                'zone': [float(df.loc[idx, 'prev_high']), float(df.loc[idx, 'next_low'])],
+                'candle_index': int(idx),
+                'timeframe': 'current'
+            })
+    
+    # Add bearish FVGs
+    for idx in bearish_fvg.index:
+        if not pd.isna(idx) and idx < len(df):
+            fvg_list.append({
+                'type': 'bearish',
+                'zone': [float(df.loc[idx, 'next_high']), float(df.loc[idx, 'prev_low'])],
+                'candle_index': int(idx),
+                'timeframe': 'current'
+            })
+    
+    return fvg_list
+
+def calculate_market_structure(df):
+    """Calculate basic market structure elements like higher highs, lower lows, etc."""
+    if df.empty:
+        return {
+            "higher_highs": [],
+            "lower_lows": [],
+            "higher_lows": [],
+            "lower_highs": [],
+            "break_of_structure": []
+        }
+    
+    # Calculate swing highs and lows using local maxima/minima
+    df = df.copy()
+    window = 3  # Look at 3 candles to identify swings
+    
+    # Identify swing highs (current high is highest in window)
+    swing_high_series = (df['h'] > df['h'].shift(1)) & (df['h'] > df['h'].shift(-1))
+    # Identify swing lows (current low is lowest in window)
+    swing_low_series = (df['l'] < df['l'].shift(1)) & (df['l'] < df['l'].shift(-1))
+    
+    # Convert boolean series to regular Python boolean values to ensure JSON serialization
+    df['swing_high'] = swing_high_series.astype(bool)
+    df['swing_low'] = swing_low_series.astype(bool)
+    
+    # Extract swing points
+    swing_highs = df[df['swing_high']]['h'].dropna()
+    swing_lows = df[df['swing_low']]['l'].dropna()
+    
+    # Determine market structure
+    structure = {
+        "swing_highs": [float(x) for x in swing_highs.tolist()],
+        "swing_lows": [float(x) for x in swing_lows.tolist()],
+        "recent_high": float(df['h'].tail(10).max()) if len(df) >= 10 else None,
+        "recent_low": float(df['l'].tail(10).min()) if len(df) >= 10 else None
+    }
+    
+    return structure
+
+def calculate_volume_analytics(df):
+    """Calculate volume-based analytics."""
+    if df.empty or 'v' not in df.columns:
+        return {
+            "volume_trend": "unknown",
+            "volume_spike_detected": False,
+            "avg_volume_last_10": 0,
+            "current_volume_vs_avg": 0
+        }
+    
+    df = df.copy()
+    df['vol_ema_short'] = df['v'].ewm(span=5).mean()
+    df['vol_ema_long'] = df['v'].ewm(span=20).mean()
+    
+    # Check for volume spikes (current volume > 2x average)
+    recent_avg_vol = df['v'].tail(10).mean()
+    current_vol = df['v'].iloc[-1] if len(df) > 0 else 0
+    
+    volume_spike = current_vol > 2 * recent_avg_vol if recent_avg_vol > 0 else False
+    
+    # Determine if volume is increasing on dips (if we can identify dips)
+    volume_trend = "neutral"
+    if len(df) > 20:
+        if df['vol_ema_short'].iloc[-1] > df['vol_ema_long'].iloc[-1]:
+            volume_trend = "increasing"
+        else:
+            volume_trend = "decreasing"
+    
+    return {
+        "volume_trend": volume_trend,
+        "volume_spike_detected": volume_spike,
+        "avg_volume_last_10": float(recent_avg_vol),
+        "current_volume_vs_avg": float(current_vol / recent_avg_vol if recent_avg_vol > 0 else 0)
+    }
+
+def calculate_volume_profile(df):
+    """Calculate basic volume profile metrics."""
+    if df.empty or 'v' not in df.columns:
+        return {
+            'total_volume': 0,
+            'avg_volume': 0,
+            'high_volume_threshold': 0,
+            'low_volume_threshold': 0
+        }
+    
+    total_volume = df['v'].sum()
+    avg_volume = df['v'].mean()
+    std_volume = df['v'].std()
+    
+    # Calculate high/low volume thresholds based on standard deviation
+    high_volume_threshold = avg_volume + std_volume if not pd.isna(std_volume) else avg_volume * 1.5
+    low_volume_threshold = max(0, avg_volume - std_volume) if not pd.isna(std_volume) else avg_volume * 0.5
+    
+    return {
+        'total_volume': float(total_volume),
+        'avg_volume': float(avg_volume),
+        'high_volume_threshold': float(high_volume_threshold),
+        'low_volume_threshold': float(low_volume_threshold)
+    }
+
+def calculate_liquidity_levels(df, num_levels=5):
+    """Calculate potential liquidity levels based on volume and price action."""
+    if df.empty:
+        return []
+    
+    # Calculate support and resistance levels based on high volume nodes
+    price_volume = df.groupby(pd.cut(df['c'], bins=num_levels)).agg({
+        'v': 'sum',
+        'h': 'max',
+        'l': 'min'
+    }).reset_index()
+    
+    liquidity_levels = []
+    for _, row in price_volume.iterrows():
+        if not pd.isna(row['v']):
+            # Get the price range for this bin
+            bin_range = row['c']
+            if hasattr(bin_range, 'left') and hasattr(bin_range, 'right'):
+                avg_price = (bin_range.left + bin_range.right) / 2
+                liquidity_levels.append({
+                    'price': float(avg_price),
+                    'volume': float(row['v']),
+                    'resistance': float(row['h']),
+                    'support': float(row['l'])
+                })
+    
+    # Sort by volume descending to get the most significant levels
+    liquidity_levels.sort(key=lambda x: x['volume'], reverse=True)
+    return liquidity_levels[:num_levels]
+
 def process_data(market_data: dict, ohlcv_data: dict) -> str:
     """Calculates technical indicators and formats the payload for Gemini. Uses defaults if no OHLCV data."""
 
@@ -201,6 +376,28 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
     # Get LTF (Lower TimeFrame) and HTF (Higher TimeFrame) data
     ltf_data = ohlcv_data.get("ltf", [])
     htf_data = ohlcv_data.get("htf", [])
+
+    # Initialize variables
+    current_rsi = 50
+    current_macd_line = 0
+    current_macd_signal = 0
+    price_change_1hr = 0
+    last_10_close_prices = [current_price] * 10
+    macd_signal = "Neutral"
+    htf_trend = "Unknown"
+    ltf_fvg_list = []
+    htf_fvg_list = []
+    ltf_volume_profile = {}
+    htf_volume_profile = {}
+    ltf_liquidity_levels = []
+    htf_liquidity_levels = []
+    price_change_4h = 0
+    price_change_12h = 0
+    price_change_24h = 0
+    ltf_market_structure = {}
+    htf_market_structure = {}
+    ltf_volume_analytics = {}
+    htf_volume_analytics = {}
 
     if ltf_data:
         # Convert LTF OHLCV data to a Pandas DataFrame for technical analysis
@@ -222,17 +419,27 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
 
         # Simple Price Change (LTF)
         price_change_1hr = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-12]) / df_ltf['c'].iloc[-12]) * 100 if len(df_ltf) >= 12 else 0
+        price_change_4h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-48]) / df_ltf['c'].iloc[-48]) * 100 if len(df_ltf) >= 48 else 0
+        price_change_12h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-144]) / df_ltf['c'].iloc[-144]) * 100 if len(df_ltf) >= 144 else 0
+        price_change_24h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-288]) / df_ltf['c'].iloc[-288]) * 100 if len(df_ltf) >= 288 else 0
 
         last_10_close_prices = df_ltf['c'].tail(10).tolist()
         macd_signal = "Bullish Crossover" if current_macd_line > current_macd_signal and current_macd_line is not None else "Bearish Crossover"
-    else:
-        # Defaults when no LTF OHLCV data
-        current_rsi = 50 # Neutral
-        current_macd_line = 0
-        current_macd_signal = 0
-        price_change_1hr = 0
-        last_10_close_prices = [current_price] * 10  # Repeat current price
-        macd_signal = "Neutral"
+        
+        # Calculate FVGs for LTF
+        ltf_fvg_list = calculate_fair_value_gaps(df_ltf)
+        
+        # Calculate volume profile for LTF
+        ltf_volume_profile = calculate_volume_profile(df_ltf)
+        
+        # Calculate liquidity levels for LTF
+        ltf_liquidity_levels = calculate_liquidity_levels(df_ltf)
+        
+        # Calculate market structure for LTF
+        ltf_market_structure = calculate_market_structure(df_ltf)
+        
+        # Calculate volume analytics for LTF
+        ltf_volume_analytics = calculate_volume_analytics(df_ltf)
 
     # Calculate HTF indicators if HTF data is available
     if htf_data:
@@ -244,32 +451,163 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         df_htf['RSI'] = ta.momentum.rsi(df_htf['c'], window=14)
         htf_rsi = df_htf['RSI'].iloc[-1]
         htf_trend = "Bullish" if htf_rsi > 50 else "Bearish" if htf_rsi < 50 else "Neutral"
-    else:
-        htf_trend = "Unknown"
+        
+        # Calculate FVGs for HTF
+        htf_fvg_list = calculate_fair_value_gaps(df_htf)
+        
+        # Calculate volume profile for HTF
+        htf_volume_profile = calculate_volume_profile(df_htf)
+        
+        # Calculate liquidity levels for HTF
+        htf_liquidity_levels = calculate_liquidity_levels(df_htf)
+        
+        # Calculate market structure for HTF
+        htf_market_structure = calculate_market_structure(df_htf)
+        
+        # Calculate volume analytics for HTF
+        htf_volume_analytics = calculate_volume_analytics(df_htf)
 
     # --- Create the Structured Payload for Gemini ---
 
-    analysis_payload = {
-        "coin_symbol": market_data.get('symbol', 'N/A'),
-        "current_price": current_price,
-        "liquidity_usd": market_data.get('liquidity'),
-        "volume_24hr": market_data.get('v24h'),
-        "price_change_1hr_pct": round(price_change_1hr, 2),
-        "RSI_14": round(current_rsi, 2) if current_rsi is not None else "N/A",
-        "MACD_signal_cross": macd_signal,
-        "last_10_close_prices": last_10_close_prices,
-        "htf_trend": htf_trend,  # Higher time frame trend for bias
+    # Helper function to convert data to JSON serializable format
+    def convert_to_serializable(obj):
+        if isinstance(obj, dict):
+            return {str(k): convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(item) for item in obj]
+        elif isinstance(obj, (int, float)):
+            return float(obj)
+        elif isinstance(obj, bool):
+            return str(obj)  # Convert booleans to strings
+        elif isinstance(obj, str):
+            return obj
+        elif obj is None:
+            return None
+        else:
+            return str(obj)  # Convert everything else to string
 
-        # Placeholder for complex analysis that Gemini can interpret
-        "FVG_analysis_hint": "No historical data available; focus on current price and market conditions.",
-        "onchain_flow_hint": "Assume a large inflow/outflow if liquidity and volume show extreme divergence from price action."
+    # Convert all data to ensure JSON serializability
+    analysis_payload = {
+        "coin_symbol": str(market_data.get('symbol', 'N/A')),
+        "current_price": float(current_price) if current_price is not None else 0,
+        "liquidity_usd": float(market_data.get('liquidity', 0)) if market_data.get('liquidity') is not None else 0,
+        "volume_24hr": float(market_data.get('v24h', 0)) if market_data.get('v24h') is not None else 0,
+        "price_change_1h_pct": round(float(price_change_1hr), 2) if price_change_1hr is not None and not pd.isna(price_change_1hr) else 0,
+        "price_change_4h_pct": round(float(price_change_4h), 2) if price_change_4h is not None and not pd.isna(price_change_4h) else 0,
+        "price_change_12h_pct": round(float(price_change_12h), 2) if price_change_12h is not None and not pd.isna(price_change_12h) else 0,
+        "price_change_24h_pct": round(float(price_change_24h), 2) if price_change_24h is not None and not pd.isna(price_change_24h) else 0,
+        "RSI_14": round(float(current_rsi), 2) if current_rsi is not None and not pd.isna(current_rsi) else "N/A",
+        "RSI_14_HTF": round(float(htf_rsi), 2) if 'htf_rsi' in locals() and htf_rsi is not None and not pd.isna(htf_rsi) else "N/A",
+        "MACD_signal_cross": str(macd_signal) if macd_signal is not None else "Neutral",
+        "last_10_close_prices": [float(price) for price in last_10_close_prices if price is not None],
+        "htf_trend": str(htf_trend) if htf_trend is not None else "Unknown",
+        
+        # Fair Value Gaps
+        "ltf_fair_value_gaps": ltf_fvg_list,
+        "htf_fair_value_gaps": htf_fvg_list,
+        
+        # Volume Profile
+        "ltf_volume_profile": ltf_volume_profile,
+        "htf_volume_profile": htf_volume_profile,
+        
+        # Liquidity Levels
+        "ltf_liquidity_levels": ltf_liquidity_levels,
+        "htf_liquidity_levels": htf_liquidity_levels,
+        
+        # Market Structure
+        "ltf_market_structure": ltf_market_structure,
+        "htf_market_structure": htf_market_structure,
+        
+        # Volume Analytics
+        "ltf_volume_analytics": ltf_volume_analytics,
+        "htf_volume_analytics": htf_volume_analytics,
+        
+        # Additional market structure data
+        "market_structure": {
+            "current_price_vs_liquidity": "unknown",
+            "volume_price_relationship": "unknown",
+            "momentum_direction": "unknown"
+        }
     }
 
+    # Apply conversion to ensure all data is serializable
+    analysis_payload = convert_to_serializable(analysis_payload)
     return json.dumps(analysis_payload)
 
 # ----------------------------------------------------------------------
 # 3. GEMINI AGENT ANALYSIS FUNCTION
 # ----------------------------------------------------------------------
+
+def generate_comprehensive_analysis(analysis_json_string: str) -> dict:
+    """Uses the Gemini API to analyze data and output a comprehensive market analysis."""
+    
+    if analysis_json_string.startswith('{"error"'):
+         return json.loads(analysis_json_string)
+
+    # Extract coin symbol from the analysis JSON string
+    try:
+        analysis_data = json.loads(analysis_json_string)
+        coin_symbol = analysis_data.get("coin_symbol", "N/A")
+    except json.JSONDecodeError:
+        coin_symbol = "N/A"
+
+    system_prompt = (
+        f"You are a professional, high-conviction Smart Money Concepts (SMC) trading analyst. "
+        f"Analyze the provided JSON market data comprehensively, focusing on liquidity, volume, momentum (RSI/MACD), "
+        f"Fair Value Gaps (FVGs), and market structure for {coin_symbol}. "
+        f"Provide a detailed analysis in the following format:\n\n"
+        f"⚡ Live {coin_symbol} Market Overview\n"
+        f"Current Price: [price] (Birdeye live)\n"
+        f"24h Change: [change]%\n"
+        f"Volume (24h): ~$[volume] ([change]%)\n"
+        f"Liquidity: ~$[liquidity] — [description of liquidity conditions].\n\n"
+        f"🔍 Price & Momentum Read\n"
+        f"Timeframe | Change | Structure | Momentum\n"
+        f"1H | [change]% | [structure] | [momentum]\n"
+        f"4H | [change]% | [structure] | [momentum]\n"
+        f"12H | [change]% | [structure] | [momentum]\n"
+        f"24H | [change]% | [structure] | [momentum]\n\n"
+        f"Short-term: [analysis].\n\n"
+        f"Medium-term: [analysis].\n\n"
+        f"Volume: [analysis].\n\n"
+        f"Wallet inflows: [analysis if available, otherwise mention it's not available].\n\n"
+        f"👉 This tells us: [synthesis of momentum and market conditions].\n\n"
+        f"💧 Liquidity & Order Flow\n"
+        f"Resting liquidity:\n\n"
+        f"Buy side: [analysis based on liquidity levels]\n"
+        f"Sell side: [analysis based on liquidity levels]\n\n"
+        f"Liquidity imbalance shows [analysis] → [trading implications].\n\n"
+        f"📊 Fair Value Gaps (FVGs)\n"
+        f"Zone | Type | Impact\n"
+        f"[list FVGs with price zones, type (bullish/bearish), and impact]\n\n"
+        f"🧭 Trading Plan\n"
+        f"🎯 [Preferred setup name] Setup ([long/short] preferred)\n\n"
+        f"Entry: [price/range]\n\n"
+        f"Stop Loss: [price]\n\n"
+        f"TP1: [price]\n\n"
+        f"TP2: [price]\n\n"
+        f"R:R: [ratio]\n\n"
+        f"[Additional setup details]\n\n"
+        f"✅ My Take\n\n"
+        f"Given the data:\n\n"
+        f"[Key points from analysis]\n\n"
+        f"👉 I'm [bias] [detailed explanation of trading bias and plan]"
+    )
+
+    user_prompt = f"Analyze the following data and provide a comprehensive market analysis: {analysis_json_string}"
+
+    try:
+        response = client.models.generate_content(
+            model='models/gemini-2.5-flash',  # Changed to stable model
+            contents=[user_prompt],
+            config=genai.types.GenerateContentConfig(
+                system_instruction=system_prompt
+            )
+        )
+        return {"analysis": response.text}
+    except Exception as e:
+        print(f"❌ Error during Gemini API call: {e}")
+        return {"error": f"AI analysis generation failed: {e}"}
 
 def generate_trade_signal(analysis_json_string: str) -> dict:
     """Uses the Gemini API to analyze data and output a trade signal."""
@@ -426,6 +764,7 @@ def main():
     parser = argparse.ArgumentParser(description='Run the Gemini Trading Agent')
     parser.add_argument('--token', type=str, default='SOL', help='Token symbol (e.g., SOL, BTC, ETH)')
     parser.add_argument('--chain', type=str, default='solana', help='Blockchain network (e.g., solana, ethereum, bsc)')
+    parser.add_argument('--mode', type=str, default='signal', choices=['signal', 'analysis'], help='Output mode: signal for trade signal, analysis for comprehensive market analysis')
     
     args = parser.parse_args()
     
@@ -451,31 +790,65 @@ def main():
 
     # 2. Process Data
     print("...Processing raw data and calculating indicators...")
+    
+    # Update the market data to include the token symbol if it's not present
+    if not market_data.get('symbol'):
+        market_data['symbol'] = args.token
+    
     analysis_payload = process_data(market_data, ohlcv_data)
     
-    # 3. Generate Signal
+    # 3. Generate Analysis/Signal based on mode
     print("...Sending structured data to Gemini for high-level analysis...")
-    signal = generate_trade_signal(analysis_payload)
-    
-    # 4. Output/Alert the Result
-    if 'error' in signal:
-        print(f"\n❌ FAILED SIGNAL GENERATION: {signal['error']}")
-    else:
-        print("\n" + "="*50)
-        print("    🧠 GEMINI HIGH-CONVICTION TRADE SIGNAL")
-        print("="*50)
-        print(f"   COIN: {market_data.get('symbol', args.token)} @ ${market_data.get('value', 'N/A')}")
-        print(f"   ACTION: {signal.get('action', 'N/A').upper()}")
-        print(f"   ENTRY PRICE: ${signal.get('entry_price', 'N/A')}")
-        print(f"   STOP LOSS: ${signal.get('stop_loss', 'N/A')}")
-        print(f"   TAKE PROFIT: ${signal.get('take_profit', 'N/A')}")
-        print(f"   CONVICTION: {signal.get('conviction_score', 'N/A')}%")
-        print("-" * 50)
-        print(f"   REASONING: {signal.get('reasoning', 'N/A')}")
-        print("="*50 + "\n")
+    if args.mode == 'analysis':
+        # Update the analysis payload to include the coin symbol properly before calling analysis
+        analysis_payload_dict = json.loads(analysis_payload)
+        analysis_payload_dict["coin_symbol"] = args.token
+        analysis_payload = json.dumps(analysis_payload_dict)
         
-        # NOTE: For a production system, you would replace this print block
-        # with an alert mechanism (e.g., email, Telegram, or an exchange API call).
+        # Print the data being sent to Gemini for debugging
+        print("\n" + "-"*60)
+        print("    DATA BEING SENT TO GEMINI FOR ANALYSIS")
+        print("-"*60)
+        print(json.dumps(json.loads(analysis_payload), indent=2))
+        print("-"*60 + "\n")
+        
+        result = generate_comprehensive_analysis(analysis_payload)
+        if 'analysis' in result:
+            print("\n" + "="*60)
+            print("    📊 COMPREHENSIVE MARKET ANALYSIS")
+            print("="*60)
+            print(result['analysis'])
+            print("="*60 + "\n")
+        elif 'error' in result:
+            print(f"\n❌ FAILED ANALYSIS GENERATION: {result['error']}")
+    else: # Default to signal mode
+        signal = generate_trade_signal(analysis_payload)
+        
+        # 4. Output/Alert the Result
+        if 'error' in signal:
+            print(f"\n❌ FAILED SIGNAL GENERATION: {signal['error']}")
+        else:
+            print("\n" + "="*50)
+            print("    🧠 GEMINI HIGH-CONVICTION TRADE SIGNAL")
+            print("="*50)
+            coin_symbol = market_data.get('symbol', args.token)
+            print(f"   COIN: {coin_symbol} @ ${market_data.get('value', 'N/A')}")
+            
+            # Update the analysis payload to include the coin symbol properly
+            analysis_payload_dict = json.loads(analysis_payload)
+            analysis_payload_dict["coin_symbol"] = coin_symbol
+            analysis_payload = json.dumps(analysis_payload_dict)
+            print(f"   ACTION: {signal.get('action', 'N/A').upper()}")
+            print(f"   ENTRY PRICE: ${signal.get('entry_price', 'N/A')}")
+            print(f"   STOP LOSS: ${signal.get('stop_loss', 'N/A')}")
+            print(f"   TAKE PROFIT: ${signal.get('take_profit', 'N/A')}")
+            print(f"   CONVICTION: {signal.get('conviction_score', 'N/A')}%")
+            print("-" * 50)
+            print(f"   REASONING: {signal.get('reasoning', 'N/A')}")
+            print("="*50 + "\n")
+            
+            # NOTE: For a production system, you would replace this print block
+            # with an alert mechanism (e.g., email, Telegram, or an exchange API call).
 
 
 if __name__ == "__main__":
