@@ -115,14 +115,24 @@ The agent outputs a trade signal with the following information:
 
 ## Dependencies
 
+The required dependencies are listed in the `requirements.txt` file:
+
 - requests
-- pandas
 - google-genai
+- pandas
 - ta (technical analysis library)
+- python-dotenv
 - argparse
+
+To install all dependencies, run:
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Security Notes
 
 - Never commit API keys to version control
 - Use environment variables for sensitive information
-- The default API keys in the script are for testing only and should be replaced in production
+- Hardcoded API keys have been removed from the script for security
+- All API keys must be set in the .env file

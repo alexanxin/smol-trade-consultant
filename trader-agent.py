@@ -27,9 +27,9 @@ except ImportError:
 # export BIRDEYE_API_KEY="your-birdeye-key"
 # export GEMINI_API_KEY="your-gemini-key"
 
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "REPLACE_WITH_YOUR_BIRDEYE_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "REPLACE_WITH_YOUR_GEMINI_KEY")
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "REPLACE_WITH_YOUR_COINGECKO_KEY")
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
 # Initialize the Gemini Client
 try:
