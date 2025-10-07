@@ -133,9 +133,13 @@ def fetch_multiple_timeframes_coingecko(pool_address: str, network: str = "solan
     # Fetch 1-hour data (HTF - Bias timeframe)
     htf_data = fetch_ohlcv_coingecko(pool_address, network, "hour", 1, 25)  # 25 hours to get 12+ data points for RSI
     
+    # Fetch 1-day data (Daily timeframe for more accurate 24H changes)
+    daily_data = fetch_ohlcv_coingecko(pool_address, network, "day", 1, 30)  # 30 days to get accurate 24H changes
+    
     return {
         "ltf": ltf_data, # Lower timeframe for execution
-        "htf": htf_data   # Higher timeframe for bias
+        "htf": htf_data,   # Higher timeframe for bias
+        "daily": daily_data   # Daily timeframe for accurate 24H analysis
     }
 
 def fetch_birdeye_data(token_address: str, chain: str):
@@ -185,7 +189,7 @@ def fetch_birdeye_data(token_address: str, chain: str):
         time.sleep(1)  # Delay between calls
         ohlcv_data = fetch_multiple_timeframes_coingecko(pool_address, chain)
     else:
-        ohlcv_data = {"ltf": [], "htf": []}
+        ohlcv_data = {"ltf": [], "htf": [], "daily": []}
 
     return market_data, ohlcv_data
 
@@ -368,14 +372,86 @@ def calculate_liquidity_levels(df, num_levels=5):
     liquidity_levels.sort(key=lambda x: x['volume'], reverse=True)
     return liquidity_levels[:num_levels]
 
+def calculate_order_blocks(df, min_body_ratio=0.6, lookback_period=20):
+    """
+    Calculate potential order blocks based on SMC concepts.
+    Order blocks are identified by:
+    1. A significant price move (sharp movement)
+    2. The preceding opposite candle that creates the order block zone
+    """
+    if df.empty:
+        return []
+    
+    df = df.copy()
+    df['body'] = abs(df['c'] - df['o'])  # Candle body size
+    df['range'] = abs(df['h'] - df['l'])  # Total candle range
+    df['body_ratio'] = df['body'] / df['range']  # Ratio of body to total range
+    df['is_bullish'] = df['c'] > df['o']
+    df['is_bearish'] = df['c'] < df['o']
+    
+    order_blocks = []
+    
+    # Iterate through the dataframe to find potential order blocks
+    for i in range(2, len(df) - 1):  # Start from 2 to allow for previous candles, end at len-1 to allow for next candles
+        # Check if we have a significant move followed by a pullback
+        # Current candle is part of the significant move
+        current = df.iloc[i]
+        prev = df.iloc[i - 1]  # This is the potential order block candle
+        two_prev = df.iloc[i - 2]  # This is the candle before the order block candle
+        
+        # Calculate the size of the significant move (current vs previous candle)
+        significant_move_size = abs(current['c'] - prev['h']) if current['c'] > prev['h'] else abs(prev['l'] - current['c'])
+        
+        # Check if we have a significant move followed by a pullback
+        # For bullish order block: look for bearish candle followed by strong bullish move
+        if prev['is_bearish'] and current['c'] > prev['h']:  # Bearish candle followed by strong bullish move
+            # Check if the move is significant
+            avg_range = df['range'].rolling(lookback_period).mean().iloc[i]
+            if significant_move_size > avg_range * 0.8:  # Significant move threshold
+                order_block = {
+                    'type': 'bullish',
+                    'high': float(prev['h']),
+                    'low': float(prev['l']),
+                    'open': float(prev['o']),
+                    'close': float(prev['c']),
+                    'candle_index': i - 1,  # Index of the order block candle
+                    'strength': float(prev['body_ratio']),  # How strong the order block candle was
+                    'volume': float(prev['v']) if 'v' in df.columns else 0,
+                    'timeframe': 'current'
+                }
+                
+                order_blocks.append(order_block)
+        
+        # For bearish order block: look for bullish candle followed by strong bearish move
+        elif prev['is_bullish'] and current['c'] < prev['l']:  # Bullish candle followed by strong bearish move
+            # Check if the move is significant
+            avg_range = df['range'].rolling(lookback_period).mean().iloc[i]
+            if significant_move_size > avg_range * 0.8:  # Significant move threshold
+                order_block = {
+                    'type': 'bearish',
+                    'high': float(prev['h']),
+                    'low': float(prev['l']),
+                    'open': float(prev['o']),
+                    'close': float(prev['c']),
+                    'candle_index': i - 1,  # Index of the order block candle
+                    'strength': float(prev['body_ratio']),  # How strong the order block candle was
+                    'volume': float(prev['v']) if 'v' in df.columns else 0,
+                    'timeframe': 'current'
+                }
+                
+                order_blocks.append(order_block)
+    
+    return order_blocks
+
 def process_data(market_data: dict, ohlcv_data: dict) -> str:
     """Calculates technical indicators and formats the payload for Gemini. Uses defaults if no OHLCV data."""
 
     current_price = market_data.get('value', 0)
 
-    # Get LTF (Lower TimeFrame) and HTF (Higher TimeFrame) data
+    # Get LTF (Lower TimeFrame), HTF (Higher TimeFrame), and Daily data
     ltf_data = ohlcv_data.get("ltf", [])
     htf_data = ohlcv_data.get("htf", [])
+    daily_data = ohlcv_data.get("daily", [])
 
     # Initialize variables
     current_rsi = 50
@@ -387,17 +463,25 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
     htf_trend = "Unknown"
     ltf_fvg_list = []
     htf_fvg_list = []
+    daily_fvg_list = []
     ltf_volume_profile = {}
     htf_volume_profile = {}
+    daily_volume_profile = {}
     ltf_liquidity_levels = []
     htf_liquidity_levels = []
+    daily_liquidity_levels = []
+    ltf_order_blocks = []
+    htf_order_blocks = []
+    daily_order_blocks = []
     price_change_4h = 0
     price_change_12h = 0
     price_change_24h = 0
     ltf_market_structure = {}
     htf_market_structure = {}
+    daily_market_structure = {}
     ltf_volume_analytics = {}
     htf_volume_analytics = {}
+    daily_volume_analytics = {}
 
     if ltf_data:
         # Convert LTF OHLCV data to a Pandas DataFrame for technical analysis
@@ -419,8 +503,8 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
 
         # Simple Price Change (LTF)
         price_change_1hr = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-12]) / df_ltf['c'].iloc[-12]) * 100 if len(df_ltf) >= 12 else 0
-        price_change_4h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-48]) / df_ltf['c'].iloc[-48]) * 100 if len(df_ltf) >= 48 else 0
-        price_change_12h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-144]) / df_ltf['c'].iloc[-144]) * 100 if len(df_ltf) >= 144 else 0
+        price_change_4h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-48]) / df_ltf['c'].iloc[-48]) * 10 if len(df_ltf) >= 48 else 0
+        price_change_12h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-144]) / df_ltf['c'].iloc[-144]) * 10 if len(df_ltf) >= 144 else 0
         price_change_24h = ((df_ltf['c'].iloc[-1] - df_ltf['c'].iloc[-288]) / df_ltf['c'].iloc[-288]) * 100 if len(df_ltf) >= 288 else 0
 
         last_10_close_prices = df_ltf['c'].tail(10).tolist()
@@ -434,6 +518,9 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         
         # Calculate liquidity levels for LTF
         ltf_liquidity_levels = calculate_liquidity_levels(df_ltf)
+        
+        # Calculate order blocks for LTF
+        ltf_order_blocks = calculate_order_blocks(df_ltf)
         
         # Calculate market structure for LTF
         ltf_market_structure = calculate_market_structure(df_ltf)
@@ -461,12 +548,131 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         # Calculate liquidity levels for HTF
         htf_liquidity_levels = calculate_liquidity_levels(df_htf)
         
+        # Calculate order blocks for HTF
+        htf_order_blocks = calculate_order_blocks(df_htf)
+        
         # Calculate market structure for HTF
         htf_market_structure = calculate_market_structure(df_htf)
         
         # Calculate volume analytics for HTF
         htf_volume_analytics = calculate_volume_analytics(df_htf)
 
+    # Calculate Daily indicators if Daily data is available
+    if daily_data:
+        df_daily = pd.DataFrame(daily_data)
+        df_daily.columns = ['t', 'o', 'h', 'l', 'c', 'v']
+        df_daily['c'] = df_daily['c'].astype(float)
+
+        # Daily RSI for long-term trend bias
+        df_daily['RSI'] = ta.momentum.rsi(df_daily['c'], window=14)
+        daily_rsi = df_daily['RSI'].iloc[-1]
+        
+        # Calculate FVGs for Daily
+        daily_fvg_list = calculate_fair_value_gaps(df_daily)
+        
+        # Calculate volume profile for Daily
+        daily_volume_profile = calculate_volume_profile(df_daily)
+        
+        # Calculate liquidity levels for Daily
+        daily_liquidity_levels = calculate_liquidity_levels(df_daily)
+        
+        # Calculate order blocks for Daily
+        daily_order_blocks = calculate_order_blocks(df_daily)
+        
+        # Calculate market structure for Daily
+        daily_market_structure = calculate_market_structure(df_daily)
+        
+        # Calculate volume analytics for Daily
+        daily_volume_analytics = calculate_volume_analytics(df_daily)
+        
+        # Calculate more accurate 24H and 12H changes using daily data
+        # 24H change (1 day ago vs current)
+        if len(df_daily) >= 2:
+            price_change_24h = ((df_daily['c'].iloc[-1] - df_daily['c'].iloc[-2]) / df_daily['c'].iloc[-2]) * 100
+        else:
+            price_change_24h = 0
+            
+        # 12H change (approximated using daily data - half day change)
+        if len(df_daily) >= 2:
+            # For 12H change, we'll use a weighted average between daily and hourly if available
+            # If we have both daily and hourly data, we'll use daily data for better accuracy
+            # since the daily data is more reliable for longer-term changes
+            daily_half_change = ((df_daily['c'].iloc[-1] - df_daily['c'].iloc[-2]) / df_daily['c'].iloc[-2]) * 100
+            price_change_12h = daily_half_change / 2  # Approximate 12H as half of daily change
+        else:
+            price_change_12h = 0
+
+    # Calculate market structure elements
+    current_price = float(market_data.get('value', 0)) if market_data.get('value') is not None else 0
+    
+    # Determine current_price_vs_liquidity based on liquidity levels
+    liquidity_description = "neutral"
+    if ltf_liquidity_levels:
+        # Find the closest support and resistance levels
+        sorted_levels = sorted(ltf_liquidity_levels, key=lambda x: x['price'])
+        closest_support = None
+        closest_resistance = None
+        
+        for level in sorted_levels:
+            if level['price'] < current_price and (closest_support is None or level['price'] > closest_support):
+                closest_support = level['price']
+            elif level['price'] > current_price and (closest_resistance is None or level['price'] < closest_resistance):
+                closest_resistance = level['price']
+        
+        if closest_support is not None and closest_resistance is not None:
+            if current_price > (closest_support + closest_resistance) / 2:
+                liquidity_description = "above_support"
+            else:
+                liquidity_description = "below_resistance"
+        elif closest_support is not None and current_price > closest_support:
+            liquidity_description = "above_support"
+        elif closest_resistance is not None and current_price < closest_resistance:
+            liquidity_description = "below_resistance"
+        elif closest_support is not None and closest_resistance is not None and closest_support <= current_price <= closest_resistance:
+            liquidity_description = "between_levels"
+    
+    # Determine volume_price_relationship based on volume analytics
+    volume_price_relationship = "neutral"
+    if ltf_volume_analytics:
+        vol_trend = ltf_volume_analytics.get("volume_trend", "neutral")
+        vol_vs_avg = ltf_volume_analytics.get("current_volume_vs_avg", 0)
+        
+        if vol_trend == "increasing" and vol_vs_avg > 1.5:
+            volume_price_relationship = "high_volume_increasing"
+        elif vol_trend == "decreasing" and vol_vs_avg < 0.5:
+            volume_price_relationship = "low_volume_decreasing"
+        elif vol_trend == "increasing":
+            volume_price_relationship = "volume_increasing"
+        elif vol_trend == "decreasing":
+            volume_price_relationship = "volume_decreasing"
+        else:
+            volume_price_relationship = "neutral"
+    
+    # Determine momentum_direction based on RSI and MACD
+    momentum_direction = "neutral"
+    if current_rsi is not None and not pd.isna(current_rsi):
+        if current_rsi > 70:
+            momentum_direction = "overbought"
+        elif current_rsi < 30:
+            momentum_direction = "oversold"
+        elif current_rsi > 50:
+            momentum_direction = "bullish"
+        else:
+            momentum_direction = "bearish"
+    
+    # Additional check using MACD if available
+    if current_macd_line is not None and current_macd_signal is not None:
+        if current_macd_line > current_macd_signal:
+            if momentum_direction == "bullish" or momentum_direction == "overbought":
+                momentum_direction = "strong_bullish"
+            else:
+                momentum_direction = "turning_bullish"
+        else:
+            if momentum_direction == "bearish" or momentum_direction == "oversold":
+                momentum_direction = "strong_bearish"
+            else:
+                momentum_direction = "turning_bearish"
+    
     # --- Create the Structured Payload for Gemini ---
 
     # Helper function to convert data to JSON serializable format
@@ -491,13 +697,14 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         "coin_symbol": str(market_data.get('symbol', 'N/A')),
         "current_price": float(current_price) if current_price is not None else 0,
         "liquidity_usd": float(market_data.get('liquidity', 0)) if market_data.get('liquidity') is not None else 0,
-        "volume_24hr": float(market_data.get('v24h', 0)) if market_data.get('v24h') is not None else 0,
+        "volume_24hr": float(market_data.get('volume', market_data.get('v24h', 0))) if (market_data.get('volume') is not None or market_data.get('v24h') is not None) else 0,
         "price_change_1h_pct": round(float(price_change_1hr), 2) if price_change_1hr is not None and not pd.isna(price_change_1hr) else 0,
         "price_change_4h_pct": round(float(price_change_4h), 2) if price_change_4h is not None and not pd.isna(price_change_4h) else 0,
         "price_change_12h_pct": round(float(price_change_12h), 2) if price_change_12h is not None and not pd.isna(price_change_12h) else 0,
         "price_change_24h_pct": round(float(price_change_24h), 2) if price_change_24h is not None and not pd.isna(price_change_24h) else 0,
         "RSI_14": round(float(current_rsi), 2) if current_rsi is not None and not pd.isna(current_rsi) else "N/A",
         "RSI_14_HTF": round(float(htf_rsi), 2) if 'htf_rsi' in locals() and htf_rsi is not None and not pd.isna(htf_rsi) else "N/A",
+        "RSI_14_daily": round(float(daily_rsi), 2) if 'daily_rsi' in locals() and daily_rsi is not None and not pd.isna(daily_rsi) else "N/A",
         "MACD_signal_cross": str(macd_signal) if macd_signal is not None else "Neutral",
         "last_10_close_prices": [float(price) for price in last_10_close_prices if price is not None],
         "htf_trend": str(htf_trend) if htf_trend is not None else "Unknown",
@@ -505,28 +712,38 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         # Fair Value Gaps
         "ltf_fair_value_gaps": ltf_fvg_list,
         "htf_fair_value_gaps": htf_fvg_list,
+        "daily_fair_value_gaps": daily_fvg_list,
         
         # Volume Profile
         "ltf_volume_profile": ltf_volume_profile,
         "htf_volume_profile": htf_volume_profile,
+        "daily_volume_profile": daily_volume_profile,
         
         # Liquidity Levels
         "ltf_liquidity_levels": ltf_liquidity_levels,
         "htf_liquidity_levels": htf_liquidity_levels,
+        "daily_liquidity_levels": daily_liquidity_levels,
+        
+        # Order Blocks
+        "ltf_order_blocks": ltf_order_blocks,
+        "htf_order_blocks": htf_order_blocks,
+        "daily_order_blocks": daily_order_blocks,
         
         # Market Structure
         "ltf_market_structure": ltf_market_structure,
         "htf_market_structure": htf_market_structure,
+        "daily_market_structure": daily_market_structure,
         
         # Volume Analytics
         "ltf_volume_analytics": ltf_volume_analytics,
         "htf_volume_analytics": htf_volume_analytics,
+        "daily_volume_analytics": daily_volume_analytics,
         
         # Additional market structure data
         "market_structure": {
-            "current_price_vs_liquidity": "unknown",
-            "volume_price_relationship": "unknown",
-            "momentum_direction": "unknown"
+            "current_price_vs_liquidity": liquidity_description,
+            "volume_price_relationship": volume_price_relationship,
+            "momentum_direction": momentum_direction
         }
     }
 
@@ -554,7 +771,7 @@ def generate_comprehensive_analysis(analysis_json_string: str) -> dict:
     system_prompt = (
         f"You are a professional, high-conviction Smart Money Concepts (SMC) trading analyst. "
         f"Analyze the provided JSON market data comprehensively, focusing on liquidity, volume, momentum (RSI/MACD), "
-        f"Fair Value Gaps (FVGs), and market structure for {coin_symbol}. "
+        f"Fair Value Gaps (FVGs), Order Blocks, and market structure for {coin_symbol}. "
         f"Provide a detailed analysis in the following format:\n\n"
         f"⚡ Live {coin_symbol} Market Overview\n"
         f"Current Price: [price] (Birdeye live)\n"
@@ -580,6 +797,9 @@ def generate_comprehensive_analysis(analysis_json_string: str) -> dict:
         f"📊 Fair Value Gaps (FVGs)\n"
         f"Zone | Type | Impact\n"
         f"[list FVGs with price zones, type (bullish/bearish), and impact]\n\n"
+        f"🏗️ Order Blocks\n"
+        f"Timeframe | Type | Price Zone | Strength | Volume\n"
+        f"[list order blocks with timeframe (LTF/HTF), type (bullish/bearish), price zone (high/low), strength, and volume]\n\n"
         f"🧭 Trading Plan\n"
         f"🎯 [Preferred setup name] Setup ([long/short] preferred)\n\n"
         f"Entry: [price/range]\n\n"
@@ -590,7 +810,7 @@ def generate_comprehensive_analysis(analysis_json_string: str) -> dict:
         f"[Additional setup details]\n\n"
         f"✅ My Take\n\n"
         f"Given the data:\n\n"
-        f"[Key points from analysis]\n\n"
+        f"[Key points from analysis including order blocks]\n\n"
         f"👉 I'm [bias] [detailed explanation of trading bias and plan]"
     )
 
@@ -805,12 +1025,12 @@ def main():
         analysis_payload_dict["coin_symbol"] = args.token
         analysis_payload = json.dumps(analysis_payload_dict)
         
-        # Print the data being sent to Gemini for debugging
-        print("\n" + "-"*60)
-        print("    DATA BEING SENT TO GEMINI FOR ANALYSIS")
-        print("-"*60)
-        print(json.dumps(json.loads(analysis_payload), indent=2))
-        print("-"*60 + "\n")
+        # Optional: Print the data being sent to Gemini for debugging (can be removed)
+        # print("\n" + "-"*60)
+        # print("    DATA BEING SENT TO GEMINI FOR ANALYSIS")
+        # print("-"*60)
+        # print(json.dumps(json.loads(analysis_payload), indent=2))
+        # print("-"*60 + "\n")
         
         result = generate_comprehensive_analysis(analysis_payload)
         if 'analysis' in result:
