@@ -8,6 +8,7 @@ import sys
 import argparse
 import subprocess
 from dotenv import load_dotenv
+from output_formatter import OutputFormatter
 
 # Load environment variables from .env file
 load_dotenv()
@@ -660,15 +661,18 @@ def get_current_session():
     current_utc = datetime.now(timezone.utc)
     hour = current_utc.hour
     
-    # Market sessions in UTC
-    if 1 <= hour <= 8:  # Asian session (Tokyo: 9:00-17:00 JST = 00:00-08:00 UTC)
-        return "Asian"
-    elif 8 <= hour <= 16:  # London session (London: 8:00-16:00 UTC)
-        return "London"
-    elif 13 <= hour <= 21:  # New York session (New York: 13:00-21:00 UTC, 9:00-17:00 EST)
+    # Market sessions in UTC (non-overlapping priority: NY > London > Asian)
+    # New York session: 13:00-21:00 UTC (8:00 AM - 4:00 PM EST)
+    if 13 <= hour < 21:
         return "New_York"
+    # London session: 8:00-13:00 UTC (overlaps with NY start, but NY takes priority)
+    elif 8 <= hour < 13:
+        return "London"
+    # Asian session: 0:00-8:00 UTC (Tokyo: 9:00 AM - 5:00 PM JST)
+    elif 0 <= hour < 8:
+        return "Asian"
+    # Low volume period: 21:00-24:00 UTC (after NY close, before Asian open)
     else:
-        # Weekend or low-volume periods
         return "Low_Volume"
 
 def detect_market_state(df, volume_profile_data):
@@ -1964,11 +1968,8 @@ def main():
             }
         
         if 'analysis' in result:
-            print("\n" + "="*60)
-            print("    📊 COMPREHENSIVE MARKET ANALYSIS")
-            print("="*60)
-            print(result['analysis'])
-            print("="*60 + "\n")
+            # Use the new formatter for beautiful output
+            OutputFormatter.format_comprehensive_analysis(result['analysis'], args.token)
         elif 'error' in result:
             print(f"\n❌ FAILED ANALYSIS GENERATION: {result['error']}")
     else: # Default to signal mode
@@ -1987,24 +1988,21 @@ def main():
         if 'error' in signal:
             print(f"\n❌ FAILED SIGNAL GENERATION: {signal['error']}")
         else:
-            print("\n" + "="*50)
-            print(f"    🧠 {provider_name} HIGH-CONVICTION TRADE SIGNAL")
-            print("="*50)
             coin_symbol = market_data.get('symbol', args.token)
-            print(f"   COIN: {coin_symbol} @ ${market_data.get('value', 'N/A')}")
             
             # Update the analysis payload to include the coin symbol properly
             analysis_payload_dict = json.loads(analysis_payload)
             analysis_payload_dict["coin_symbol"] = coin_symbol
             analysis_payload = json.dumps(analysis_payload_dict)
-            print(f"   ACTION: {signal.get('action', 'N/A').upper()}")
-            print(f"   ENTRY PRICE: ${signal.get('entry_price', 'N/A')}")
-            print(f"   STOP LOSS: ${signal.get('stop_loss', 'N/A')}")
-            print(f"   TAKE PROFIT: ${signal.get('take_profit', 'N/A')}")
-            print(f"   CONVICTION: {signal.get('conviction_score', 'N/A')}%")
-            print("-" * 50)
-            print(f"   REASONING: {signal.get('reasoning', 'N/A')}")
-            print("="*50 + "\n")
+            
+            # Use the new formatter for beautiful output
+            OutputFormatter.format_trade_signal(signal, market_data, coin_symbol)
+            
+            # Add Fabio Valentino analysis if available
+            fabio_data = analysis_payload_dict.get('fabio_valentino_analysis', {})
+            current_session = analysis_payload_dict.get('current_trading_session', 'Unknown')
+            if fabio_data:
+                OutputFormatter.format_fabio_valentino_analysis(fabio_data, current_session, analysis_payload_dict)
             
             # NOTE: For a production system, you would replace this print block
             # with an alert mechanism (e.g., email, Telegram, or an exchange API call).
