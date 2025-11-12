@@ -1,11 +1,12 @@
+#!/usr/bin/env python3
 import os
 import json
 import requests
 import pandas as pd
-import google.genai as genai
 import time
 import sys
 import argparse
+import subprocess
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -37,15 +38,6 @@ except ImportError:
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
-
-# Initialize the Gemini Client
-try:
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "REPLACE_WITH_YOUR_GEMINI_KEY":
-        raise ValueError("GEMINI_API_KEY not set.")
-    client = genai.Client(api_key=GEMINI_API_KEY)
-except Exception as e:
-    print(f"Error initializing Gemini client: {e}")
-    # We will let the script proceed to check API keys inside main()
 
 # ----------------------------------------------------------------------
 # 1. DATA RETRIEVAL FUNCTION
@@ -324,29 +316,117 @@ def calculate_volume_analytics(df):
         "current_volume_vs_avg": float(current_vol / recent_avg_vol if recent_avg_vol > 0 else 0)
     }
 
-def calculate_volume_profile(df):
-    """Calculate basic volume profile metrics."""
+def calculate_volume_profile(df, num_bins=20):
+    """Calculate comprehensive volume profile with POC and LVN detection."""
     if df.empty or 'v' not in df.columns:
         return {
             'total_volume': 0,
             'avg_volume': 0,
             'high_volume_threshold': 0,
-            'low_volume_threshold': 0
+            'low_volume_threshold': 0,
+            'poc_price': 0,
+            'poc_volume': 0,
+            'low_volume_nodes': [],
+            'high_volume_nodes': [],
+            'value_area_high': 0,
+            'value_area_low': 0,
+            'imbalance_zones': []
         }
     
+    df = df.copy()
     total_volume = df['v'].sum()
     avg_volume = df['v'].mean()
     std_volume = df['v'].std()
     
-    # Calculate high/low volume thresholds based on standard deviation
-    high_volume_threshold = avg_volume + std_volume if not pd.isna(std_volume) else avg_volume * 1.5
-    low_volume_threshold = max(0, avg_volume - std_volume) if not pd.isna(std_volume) else avg_volume * 0.5
+    # Create price bins for volume profile
+    price_range = df['h'].max() - df['l'].min()
+    bin_size = price_range / num_bins if num_bins > 0 else price_range
+    
+    # Calculate volume distribution across price levels
+    bins = pd.cut(df['c'], bins=num_bins, labels=False)
+    volume_profile = df.groupby(bins).agg({
+        'v': 'sum',
+        'c': 'mean',
+        'h': 'max',
+        'l': 'min'
+    })
+    
+    # Access data directly without reset_index to avoid column conflicts
+    # Find Point of Control (highest volume bin)
+    poc_idx = volume_profile['v'].idxmax()
+    poc_price = volume_profile.loc[poc_idx, 'c']
+    poc_volume = volume_profile.loc[poc_idx, 'v']
+    
+    # Find Low Volume Nodes (bottom 20% of volume distribution)
+    volume_threshold_20pct = volume_profile['v'].quantile(0.2)
+    lvn_candidates = volume_profile[volume_profile['v'] <= volume_threshold_20pct]
+    low_volume_nodes = []
+    
+    for bin_idx, node in lvn_candidates.iterrows():
+        low_volume_nodes.append({
+            'price': float(node['c']),
+            'volume': float(node['v']),
+            'strength': 'low' if node['v'] <= volume_profile['v'].quantile(0.1) else 'medium'
+        })
+    
+    # Find High Volume Nodes (top 20% of volume distribution)
+    volume_threshold_80pct = volume_profile['v'].quantile(0.8)
+    hvn_candidates = volume_profile[volume_profile['v'] >= volume_threshold_80pct]
+    high_volume_nodes = []
+    
+    for bin_idx, node in hvn_candidates.iterrows():
+        high_volume_nodes.append({
+            'price': float(node['c']),
+            'volume': float(node['v']),
+            'strength': 'high' if node['v'] >= volume_profile['v'].quantile(0.9) else 'medium'
+        })
+    
+    # Calculate Value Area (70% of volume around POC)
+    sorted_volume = volume_profile.sort_values('v', ascending=False)
+    cumulative_volume = 0
+    target_volume = total_volume * 0.70
+    value_area_high = poc_price
+    value_area_low = poc_price
+    
+    for bin_idx, row in sorted_volume.iterrows():
+        if cumulative_volume < target_volume:
+            value_area_low = min(value_area_low, row['c'])
+            value_area_high = max(value_area_high, row['c'])
+            cumulative_volume += row['v']
+        else:
+            break
+    
+    # Detect imbalance zones (areas where price moved quickly through low volume)
+    imbalance_zones = []
+    for i in range(1, len(df)):
+        prev_bar = df.iloc[i-1]
+        curr_bar = df.iloc[i]
+        
+        # Look for quick moves through low volume areas
+        price_move_pct = abs(curr_bar['c'] - prev_bar['c']) / prev_bar['c']
+        volume_vs_avg = curr_bar['v'] / avg_volume if avg_volume > 0 else 1
+        
+        if price_move_pct > 0.02 and volume_vs_avg < 0.8:  # 2% move with below-average volume
+            direction = 'bullish' if curr_bar['c'] > prev_bar['c'] else 'bearish'
+            imbalance_zones.append({
+                'type': direction,
+                'price_range': [float(min(prev_bar['l'], curr_bar['l'])), float(max(prev_bar['h'], curr_bar['h']))],
+                'strength': 'strong' if price_move_pct > 0.05 else 'medium'
+            })
     
     return {
         'total_volume': float(total_volume),
         'avg_volume': float(avg_volume),
-        'high_volume_threshold': float(high_volume_threshold),
-        'low_volume_threshold': float(low_volume_threshold)
+        'high_volume_threshold': float(avg_volume + std_volume) if not pd.isna(std_volume) else avg_volume * 1.5,
+        'low_volume_threshold': float(max(0, avg_volume - std_volume)) if not pd.isna(std_volume) else avg_volume * 0.5,
+        'poc_price': float(poc_price),
+        'poc_volume': float(poc_volume),
+        'low_volume_nodes': low_volume_nodes,
+        'high_volume_nodes': high_volume_nodes,
+        'value_area_high': float(value_area_high),
+        'value_area_low': float(value_area_low),
+        'imbalance_zones': imbalance_zones,
+        'volume_concentration': float(poc_volume / total_volume) if total_volume > 0 else 0
     }
 
 def calculate_liquidity_levels(df, num_levels=5):
@@ -355,7 +435,7 @@ def calculate_liquidity_levels(df, num_levels=5):
         return []
     
     # Calculate support and resistance levels based on high volume nodes
-    price_volume = df.groupby(pd.cut(df['c'], bins=num_levels)).agg({
+    price_volume = df.groupby(pd.cut(df['c'], bins=num_levels), observed=False).agg({
         'v': 'sum',
         'h': 'max',
         'l': 'min'
@@ -461,7 +541,7 @@ def detect_candlestick_patterns(df):
     df = df.copy()
     df['body'] = abs(df['c'] - df['o'])  # Candle body size
     df['range'] = abs(df['h'] - df['l'])  # Total candle range
-    df['body_ratio'] = df['body'] / df['range']  # Ratio of body to total range
+    df['body_ratio'] = df['body'] / df['range'].replace(0, 1)  # Avoid division by zero
     df['is_bullish'] = df['c'] > df['o']
     df['is_bearish'] = df['c'] < df['o']
     
@@ -514,16 +594,16 @@ def detect_candlestick_patterns(df):
         third_range = third['h'] - third['l']
         
         # Check if first candle is bullish and has a large body
-        first_bullish_large = first['c'] > first['o'] and first_body / first_range > 0.7
+        first_bullish_large = first_range > 0 and first['c'] > first['o'] and first_body / first_range > 0.7
         
         # Check if second candle has a small body (star)
-        second_small = second_body / second_range < 0.3
+        second_small = second_range > 0 and second_body / second_range < 0.3
         
         # Check if second candle gaps above first candle
         second_gaps_up = min(second['o'], second['c']) > max(first['o'], first['c'])
         
         # Check if third candle is bearish and large
-        third_bearish_large = third['o'] > third['c'] and third_body / third_range > 0.7
+        third_bearish_large = third_range > 0 and third['o'] > third['c'] and third_body / third_range > 0.7
         
         # Check if third candle closes well into first candle's body
         third_closes_deep = third['c'] < (first['o'] + first['c']) / 2
@@ -553,9 +633,12 @@ def detect_candlestick_patterns(df):
         # 1. Very small body (small portion of total range)
         # 2. Long upper shadow (significant portion of total range)
         # 3. Little or no lower shadow
-        is_gravestone = (body_size / total_range < 0.1 and 
-                         upper_shadow / total_range > 0.7 and 
-                         lower_shadow / total_range < 0.1)
+        if total_range > 0:
+            is_gravestone = (body_size / total_range < 0.1 and 
+                             upper_shadow / total_range > 0.7 and 
+                             lower_shadow / total_range < 0.1)
+        else:
+            is_gravestone = False
         
         if is_gravestone:
             pattern = {
@@ -569,6 +652,299 @@ def detect_candlestick_patterns(df):
             patterns.append(pattern)
     
     return patterns
+
+def get_current_session():
+    """Determine current trading session based on UTC time."""
+    from datetime import datetime, timezone
+    
+    current_utc = datetime.now(timezone.utc)
+    hour = current_utc.hour
+    
+    # Market sessions in UTC
+    if 1 <= hour <= 8:  # Asian session (Tokyo: 9:00-17:00 JST = 00:00-08:00 UTC)
+        return "Asian"
+    elif 8 <= hour <= 16:  # London session (London: 8:00-16:00 UTC)
+        return "London"
+    elif 13 <= hour <= 21:  # New York session (New York: 13:00-21:00 UTC, 9:00-17:00 EST)
+        return "New_York"
+    else:
+        # Weekend or low-volume periods
+        return "Low_Volume"
+
+def detect_market_state(df, volume_profile_data):
+    """
+    Detect market state using Auction Market Theory:
+    - Balanced: Price is consolidating within a range
+    - Imbalanced: Price is moving directionally seeking new balance
+    """
+    if df.empty or len(df) < 10:
+        return {
+            "state": "unknown",
+            "balance_high": 0,
+            "balance_low": 0,
+            "balance_center": 0,
+            "imbalance_direction": None,
+            "strength": "low"
+        }
+    
+    # Get recent price data for analysis
+    recent_df = df.tail(20)  # Last 20 candles
+    current_price = df['c'].iloc[-1]
+    
+    # Calculate price range and volatility
+    price_range = recent_df['h'].max() - recent_df['l'].min()
+    avg_range = recent_df['h'] - recent_df['l']
+    volatility = avg_range.mean()
+    
+    # Calculate mean price for balance center
+    balance_center = recent_df['c'].mean()
+    
+    # Determine balance range (80% of price movement around center)
+    balance_range = price_range * 0.8
+    balance_high = balance_center + balance_range / 2
+    balance_low = balance_center - balance_range / 2
+    
+    # Check for directional movement vs range-bound behavior
+    price_changes = recent_df['c'].pct_change().dropna()
+    positive_changes = (price_changes > 0).sum()
+    negative_changes = (price_changes < 0).sum()
+    
+    # Calculate trend strength
+    total_changes = len(price_changes)
+    directional_bias = abs(positive_changes - negative_changes) / total_changes if total_changes > 0 else 0
+    
+    # Determine market state
+    if directional_bias < 0.3:  # Less than 30% directional bias = balanced
+        state = "balanced"
+        imbalance_direction = None
+        strength = "strong" if directional_bias < 0.15 else "medium"
+    else:
+        state = "imbalanced"
+        if positive_changes > negative_changes:
+            imbalance_direction = "bullish"
+        else:
+            imbalance_direction = "bearish"
+        strength = "strong" if directional_bias > 0.6 else "medium"
+    
+    return {
+        "state": state,
+        "balance_high": float(balance_high),
+        "balance_low": float(balance_low),
+        "balance_center": float(balance_center),
+        "imbalance_direction": imbalance_direction,
+        "strength": strength,
+        "directional_bias": float(directional_bias),
+        "current_price_vs_balance": float((current_price - balance_center) / balance_center) if balance_center > 0 else 0
+    }
+
+def analyze_order_flow_pressure(df, volume_profile_data):
+    """
+    Simulate order flow analysis by analyzing volume-price relationships.
+    This provides leading insights into market participation.
+    """
+    if df.empty or len(df) < 5:
+        return {
+            "buying_pressure": "neutral",
+            "selling_pressure": "neutral",
+            "aggressive_orders": False,
+            "order_imbalance": 0,
+            "cvd_trend": "neutral"
+        }
+    
+    # Calculate volume-weighted price analysis
+    df = df.tail(10)  # Last 10 candles for recent flow
+    current_price = df['c'].iloc[-1]
+    
+    # Calculate Cumulative Volume Delta (CVD) simulation
+    price_changes = df['c'].diff()
+    volume_flow = []
+    cumulative_delta = 0
+    
+    for i in range(1, len(df)):
+        change = price_changes.iloc[i]
+        volume = df['v'].iloc[i]
+        
+        if change > 0:  # Price up
+            delta = volume  # Buying pressure
+        elif change < 0:  # Price down
+            delta = -volume  # Selling pressure
+        else:
+            delta = 0
+        
+        volume_flow.append(delta)
+        cumulative_delta += delta
+    
+    # Determine pressure direction
+    recent_flow = volume_flow[-5:] if len(volume_flow) >= 5 else volume_flow
+    buying_pressure = sum([x for x in recent_flow if x > 0])
+    selling_pressure = abs(sum([x for x in recent_flow if x < 0]))
+    
+    # Calculate order imbalance
+    total_volume = sum(recent_flow) if recent_flow else 1
+    order_imbalance = buying_pressure - selling_pressure
+    imbalance_ratio = order_imbalance / abs(total_volume) if total_volume != 0 else 0
+    
+    # Detect aggressive orders (large volume moves)
+    avg_volume = df['v'].mean()
+    large_volume_threshold = avg_volume * 2
+    aggressive_orders = any(v > large_volume_threshold for v in df['v'].tail(3))
+    
+    # CVD trend analysis
+    if len(volume_flow) >= 3:
+        recent_cvd = sum(volume_flow[-3:])
+        if recent_cvd > avg_volume * 0.5:
+            cvd_trend = "bullish"
+        elif recent_cvd < -avg_volume * 0.5:
+            cvd_trend = "bearish"
+        else:
+            cvd_trend = "neutral"
+    else:
+        cvd_trend = "neutral"
+    
+    return {
+        "buying_pressure": "high" if buying_pressure > selling_pressure * 1.5 else "low" if buying_pressure < selling_pressure * 0.5 else "neutral",
+        "selling_pressure": "high" if selling_pressure > buying_pressure * 1.5 else "low" if selling_pressure < buying_pressure * 0.5 else "neutral",
+        "aggressive_orders": aggressive_orders,
+        "order_imbalance": float(imbalance_ratio),
+        "cvd_trend": cvd_trend,
+        "cumulative_delta": float(cumulative_delta)
+    }
+
+def analyze_trend_following_opportunity(df, market_state, volume_profile, order_flow):
+    """
+    Fabio Valentino's Trend Following Model for imbalance/expansion phases.
+    Capitalizes on strong directional moves when market is "out of balance".
+    """
+    if market_state["state"] != "imbalanced" or not order_flow["aggressive_orders"]:
+        return None
+    
+    current_price = df['c'].iloc[-1]
+    
+    # Check if we're in high volatility period (NY session optimal)
+    session = get_current_session()
+    if session != "New_York":
+        return None
+    
+    # Validate entry location using volume analysis
+    poc_price = volume_profile.get("poc_price", current_price)
+    lvn_levels = volume_profile.get("low_volume_nodes", [])
+    
+    if not lvn_levels:
+        return None
+    
+    # Find nearest LVN as reaction level
+    nearest_lvn = min(lvn_levels, key=lambda x: abs(x['price'] - current_price))
+    
+    # Determine if pattern is framed correctly against distribution
+    if market_state["imbalance_direction"] == "bullish":
+        # For bullish continuation, price should be above POC and moving through LVN
+        if current_price < poc_price:
+            return None
+        
+        target = poc_price  # Target is Previous Balance Area (POC)
+        confidence = 70  # 70% probability of reversal at target
+        
+    elif market_state["imbalance_direction"] == "bearish":
+        # For bearish continuation, price should be below POC and moving through LVN
+        if current_price > poc_price:
+            return None
+        
+        target = poc_price  # Target is Previous Balance Area (POC)
+        confidence = 70
+    
+    else:
+        return None
+    
+    # Calculate stop loss placement (protected exactly above/below big aggression)
+    stop_loss = current_price * 0.98 if market_state["imbalance_direction"] == "bullish" else current_price * 1.02
+    
+    return {
+        "model_type": "trend_following",
+        "setup_name": f"{market_state['imbalance_direction'].title()} Continuation",
+        "direction": market_state["imbalance_direction"],
+        "entry_price": current_price,
+        "stop_loss": stop_loss,
+        "target": target,
+        "confidence": confidence,
+        "rationale": f"Market in {market_state['state']} state with {market_state['imbalance_direction']} bias. LVN reaction at {nearest_lvn['price']:.4f}. Target POC at {target:.4f}.",
+        "risk_reward": abs(target - current_price) / abs(current_price - stop_loss) if stop_loss != current_price else 0
+    }
+
+def analyze_mean_reversion_opportunity(df, market_state, volume_profile, order_flow):
+    """
+    Fabio Valentino's Mean Reverting Model for consolidation/balanced phases.
+    Takes advantage when price goes to "deep discount" and snaps back.
+    """
+    if market_state["state"] != "balanced":
+        return None
+    
+    current_price = df['c'].iloc[-1]
+    balance_high = market_state["balance_high"]
+    balance_low = market_state["balance_low"]
+    balance_center = market_state["balance_center"]
+    
+    # Avoid first swing outside balance (high risk of fake outs)
+    recent_df = df.tail(10)
+    first_movement = False
+    
+    if market_state["imbalance_direction"] is None:
+        # Check if this is the first clear breakout
+        if len(recent_df) >= 3:
+            for i in range(1, len(recent_df)):
+                if recent_df['c'].iloc[i] > balance_high or recent_df['c'].iloc[i] < balance_low:
+                    first_movement = True
+                    break
+        
+        if first_movement:
+            return None  # Wait for retracement
+    
+    # Wait for confirmation: clear breakout and subsequent retracement
+    breakout_occurred = False
+    retracement_occurred = False
+    
+    for i in range(len(recent_df) - 1, 0, -1):
+        if recent_df['c'].iloc[i] > balance_high or recent_df['c'].iloc[i] < balance_low:
+            breakout_occurred = True
+            # Check for retracement back toward balance
+            if (recent_df['c'].iloc[i] < recent_df['c'].iloc[i-1] and market_state["imbalance_direction"] == "bullish") or \
+               (recent_df['c'].iloc[i] > recent_df['c'].iloc[i-1] and market_state["imbalance_direction"] == "bearish"):
+                retracement_occurred = True
+                break
+    
+    if not (breakout_occurred and retracement_occurred):
+        return None
+    
+    # Target is POC (highest probability area to be revisited)
+    poc_price = volume_profile.get("poc_price", balance_center)
+    target = poc_price
+    
+    # Aggressive risk management - wrong immediately if trade moves against position
+    # Place stop loss one or two ticks below actual high/low
+    if market_state["imbalance_direction"] == "bullish":
+        # Price went down to deep discount, now bouncing back
+        recent_low = recent_df['l'].min()
+        stop_loss = recent_low * 0.999  # 1 tick below actual low
+        direction = "long"
+    else:
+        # Price went up to deep premium, now coming back down
+        recent_high = recent_df['h'].max()
+        stop_loss = recent_high * 1.001  # 1 tick above actual high
+        direction = "short"
+    
+    # Move stop to break-even immediately after small profit
+    confidence = 80  # High confidence for mean reversion setups
+    
+    return {
+        "model_type": "mean_reversion",
+        "setup_name": f"{direction.title()} Mean Reversion",
+        "direction": direction,
+        "entry_price": current_price,
+        "stop_loss": stop_loss,
+        "target": target,
+        "confidence": confidence,
+        "rationale": f"Market in {market_state['state']} state. Price moved to deep discount/premium and is retracing. Target POC at {target:.4f}.",
+        "risk_reward": abs(target - current_price) / abs(current_price - stop_loss) if stop_loss != current_price else 0
+    }
 
 def process_data(market_data: dict, ohlcv_data: dict) -> str:
     """Calculates technical indicators and formats the payload for Gemini. Uses defaults if no OHLCV data."""
@@ -609,6 +985,15 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
     ltf_volume_analytics = {}
     htf_volume_analytics = {}
     daily_volume_analytics = {}
+    # Fabio Valentino Strategy Analysis
+    current_session = get_current_session()
+    ltf_market_state = {}
+    htf_market_state = {}
+    daily_market_state = {}
+    ltf_order_flow = {}
+    htf_order_flow = {}
+    daily_order_flow = {}
+    fabio_valentino_opportunities = {}
 
     if ltf_data:
         # Convert LTF OHLCV data to a Pandas DataFrame for technical analysis
@@ -658,6 +1043,20 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         # Calculate candlestick patterns for LTF
         ltf_candlestick_patterns = detect_candlestick_patterns(df_ltf)
 
+        # Fabio Valentino Strategy Analysis for LTF
+        if not df_ltf.empty:
+            ltf_market_state = detect_market_state(df_ltf, ltf_volume_profile)
+            ltf_order_flow = analyze_order_flow_pressure(df_ltf, ltf_volume_profile)
+            
+            # Analyze both trend following and mean reversion opportunities
+            trend_setup = analyze_trend_following_opportunity(df_ltf, ltf_market_state, ltf_volume_profile, ltf_order_flow)
+            mean_reversion_setup = analyze_mean_reversion_opportunity(df_ltf, ltf_market_state, ltf_volume_profile, ltf_order_flow)
+            
+            fabio_valentino_opportunities = {
+                "trend_following": trend_setup,
+                "mean_reversion": mean_reversion_setup
+            }
+
     # Calculate HTF indicators if HTF data is available
     if htf_data:
         df_htf = pd.DataFrame(htf_data)
@@ -689,6 +1088,11 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         
         # Calculate candlestick patterns for HTF
         htf_candlestick_patterns = detect_candlestick_patterns(df_htf)
+        
+        # Fabio Valentino Strategy Analysis for HTF
+        if not df_htf.empty:
+            htf_market_state = detect_market_state(df_htf, htf_volume_profile)
+            htf_order_flow = analyze_order_flow_pressure(df_htf, htf_volume_profile)
 
     # Calculate Daily indicators if Daily data is available
     if daily_data:
@@ -737,6 +1141,11 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
         
         # Calculate candlestick patterns for Daily
         daily_candlestick_patterns = detect_candlestick_patterns(df_daily)
+        
+        # Fabio Valentino Strategy Analysis for Daily
+        if not df_daily.empty:
+            daily_market_state = detect_market_state(df_daily, daily_volume_profile)
+            daily_order_flow = analyze_order_flow_pressure(df_daily, daily_volume_profile)
 
     # Calculate market structure elements
     current_price = float(market_data.get('value', 0)) if market_data.get('value') is not None else 0
@@ -885,6 +1294,18 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
             "current_price_vs_liquidity": liquidity_description,
             "volume_price_relationship": volume_price_relationship,
             "momentum_direction": momentum_direction
+        },
+        
+        # Fabio Valentino Trading Strategy
+        "current_trading_session": current_session,
+        "fabio_valentino_analysis": {
+            "ltf_market_state": ltf_market_state,
+            "htf_market_state": htf_market_state,
+            "daily_market_state": daily_market_state,
+            "ltf_order_flow": ltf_order_flow,
+            "htf_order_flow": htf_order_flow,
+            "daily_order_flow": daily_order_flow,
+            "trading_opportunities": fabio_valentino_opportunities
         }
     }
 
@@ -893,11 +1314,367 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
     return json.dumps(analysis_payload)
 
 # ----------------------------------------------------------------------
-# 3. GEMINI AGENT ANALYSIS FUNCTION
+# 3. AI PROVIDER FUNCTIONS
+# ----------------------------------------------------------------------
+
+def check_lm_studio(lmstudio_url: str = "http://127.0.0.1:1234"):
+    """Check if LM Studio is running at the specified URL."""
+    try:
+        response = requests.get(f"{lmstudio_url}/v1/models", timeout=5)
+        if response.status_code == 200:
+            print(f"✅ LM Studio found at {lmstudio_url}")
+            return True
+        else:
+            print(f"⚠️  LM Studio found but unexpected response: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ LM Studio not found at {lmstudio_url}: {e}")
+        return False
+
+def call_lm_studio(prompt: str, system_prompt: str = None, lmstudio_url: str = "http://127.0.0.1:1234") -> str:
+    """Call LM Studio API with the given prompt."""
+    try:
+        # First, get available models
+        models_response = requests.get(f"{lmstudio_url}/v1/models", timeout=5)
+        if models_response.status_code != 200:
+            return f"Error: Cannot get models from LM Studio"
+        
+        models_data = models_response.json()
+        available_models = models_data.get('data', [])
+        
+        if not available_models:
+            return f"Error: No models available in LM Studio"
+        
+        # Use the first available model
+        model_name = available_models[0].get('id', 'local-model')
+        
+        # Combine prompts
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+        else:
+            full_prompt = prompt
+        
+        # Prepare the request using chat completions format
+        data = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt or "You are a professional trading analyst."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 20000,  # Allow full detailed responses
+            "temperature": 0.7,
+            "stream": False
+        }
+        
+        response = requests.post(
+            f"{lmstudio_url}/v1/chat/completions",
+            json=data,
+            timeout=120,  # Increased from 30 to 120 seconds for detailed Qwen analysis
+            headers={"Content-Type": "application/json"}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            choices = result.get('choices', [])
+            if choices:
+                message = choices[0].get('message', {})
+                content = message.get('content', '').strip()
+                if content:
+                    print(f"✅ LM Studio: Full response received ({len(content)} characters)")
+                    return content
+                else:
+                    print(f"⚠️  DEBUG: Empty content from LM Studio, raw result: {result}")
+                    return "Error: Empty response from LM Studio"
+            else:
+                print(f"⚠️  DEBUG: No choices in LM Studio response: {result}")
+                return "Error: No response from LM Studio"
+        else:
+            print(f"⚠️  DEBUG: HTTP {response.status_code} from LM Studio: {response.text[:200]}")
+            return f"Error: HTTP {response.status_code} - {response.text[:200]}"
+            
+    except requests.exceptions.RequestException as e:
+        return f"Error: Request failed - {str(e)}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def get_ai_provider(args):
+    """Determine which AI provider to use based on command line argument."""
+    
+    provider = args.ai_provider
+    
+    print(f"🔍 DEBUG: Requested AI provider: {provider}")
+    
+    if provider == 'auto':
+        print("🔍 DEBUG: Auto-detecting AI provider...")
+        # Auto-detect the best available provider (LM Studio for local, then Gemini)
+        if check_lm_studio(args.lmstudio_url):
+            print(f"🔍 DEBUG: Auto-selected LM Studio at {args.lmstudio_url} (LOCAL - FREE)")
+            return 'lmstudio'
+        elif GEMINI_API_KEY and GEMINI_API_KEY != "REPLACE_WITH_YOUR_GEMINI_KEY":
+            print("🔍 DEBUG: Auto-selected Gemini API (Cloud)")
+            return 'gemini'
+        else:
+            print("⚠️  No AI provider available, using fallback logic")
+            return 'fallback'
+    elif provider == 'lmstudio':
+        print(f"🔍 DEBUG: Checking LM Studio at {args.lmstudio_url}...")
+        if check_lm_studio(args.lmstudio_url):
+            print(f"✅ LM Studio confirmed available at {args.lmstudio_url}")
+            return 'lmstudio'
+        else:
+            print("❌ LM Studio not available, falling back...")
+            if GEMINI_API_KEY and GEMINI_API_KEY != "REPLACE_WITH_YOUR_GEMINI_KEY":
+                print("🔄 Falling back to Gemini API")
+                return 'gemini'
+            else:
+                print("❌ No fallbacks available")
+                return 'fallback'
+    elif provider == 'gemini':
+        print("🔍 DEBUG: Checking Gemini API...")
+        if GEMINI_API_KEY and GEMINI_API_KEY != "REPLACE_WITH_YOUR_GEMINI_KEY":
+            print("✅ Gemini API confirmed available")
+            return 'gemini'
+        else:
+            print("❌ Gemini API not available, falling back...")
+            if check_lm_studio(args.lmstudio_url):
+                print(f"🔄 Falling back to LM Studio at {args.lmstudio_url}")
+                return 'lmstudio'
+            else:
+                print("❌ No fallbacks available")
+                return 'fallback'
+    else:
+        print(f"🔍 DEBUG: Unknown provider '{provider}', using fallback")
+        return 'fallback'
+
+def call_ai_provider(provider: str, prompt: str, system_prompt: str = None, lmstudio_url: str = "http://127.0.0.1:1234") -> str:
+    """Call the specified AI provider."""
+    if provider == 'lmstudio':
+        return call_lm_studio(prompt, system_prompt, lmstudio_url)
+    elif provider == 'gemini':
+        try:
+            # Combine system and user prompts for the CLI
+            full_prompt = f"{system_prompt}\n\n{prompt}"
+            
+            # Get the Google Cloud Project ID from environment variables
+            google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT")
+            
+            # Prepare the environment for the subprocess
+            env = os.environ.copy()
+            if google_cloud_project:
+                env['GOOGLE_CLOUD_PROJECT'] = google_cloud_project
+            
+            # Execute the gemini CLI command
+            process = subprocess.run(
+                ['gemini', full_prompt],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env
+            )
+            return process.stdout.strip()
+        except FileNotFoundError:
+            return "Error: 'gemini' command not found. Please ensure the Gemini CLI is installed and in your PATH."
+        except subprocess.CalledProcessError as e:
+            return f"Error: Gemini CLI failed with exit code {e.returncode}. Stderr: {e.stderr}"
+        except Exception as e:
+            return f"Error: An unexpected error occurred when calling Gemini CLI: {e}"
+    else:
+        return f"Unknown AI provider: {provider}"
+
+def generate_trade_signal_multi_provider(analysis_json_string: str, ai_provider: str, lmstudio_url: str = "http://127.0.0.1:1234") -> dict:
+    """Generate trade signal using the specified AI provider."""
+    
+    if analysis_json_string.startswith('{"error"'):
+         return json.loads(analysis_json_string)
+
+    # Use ultra-short prompts for LM Studio due to context length limitations
+    if ai_provider == 'lmstudio':
+        system_prompt = "Trading analyst: provide JSON signal."
+        
+        # Extract essential data only
+        try:
+            data = json.loads(analysis_json_string)
+            current_price = data.get("current_price", 0)
+            rsi_14 = data.get("RSI_14", 50)
+            price_change_1h = data.get("price_change_1h_pct", 0)
+            
+            user_prompt = f"${current_price}, RSI:{rsi_14}, 1H:{price_change_1h}% → JSON: action, entry_price, stop_loss, take_profit, conviction_score, reasoning"
+        except:
+            user_prompt = f"Analyze: ${data.get('current_price', 0)}, RSI:{data.get('RSI_14', 50)}, 1H:{data.get('price_change_1h_pct', 0)}%"
+    else:
+        # Full prompt for Gemini and other providers
+        system_prompt = (
+            "You are a professional, high-conviction Smart Money Concepts (SMC) trading agent implementing the Fabio Valentino strategy. "
+            "Analyze the provided JSON market data using both classic SMC analysis and the advanced Fabio Valentino methodology:\n\n"
+            "🔍 FABIO VALENTINO STRATEGY ANALYSIS:\n"
+            "1. Market State Detection: Determine if market is in BALANCED (consolidation) or IMBALANCED (expansion) state using Auction Market Theory\n"
+            "2. Volume Profile Analysis: Identify Point of Control (POC), Low Volume Nodes (LVN), and High Volume Nodes (HVN)\n"
+            "3. Order Flow Pressure: Analyze buying/selling pressure, aggressive orders, and Cumulative Volume Delta (CVD)\n"
+            "4. Trading Models:\n"
+            "   - TREND FOLLOWING: For imbalance/expansion phases, target POC after moves through LVN\n"
+            "   - MEAN REVERSION: For balanced/consolidation phases, wait for deep discount/premium then snap back\n\n"
+            "🎯 TRADING FRAMEWORK:\n"
+            "- Session Timing: NY session optimal for trend following, London for mean reversion\n"
+            "- Location Validation: Frame trades correctly against volume distribution\n"
+            "- Aggression Filter: Only trade with confirmed institutional participation\n"
+            "- Target Selection: POC serves as primary objective (70% reversal probability)\n"
+            "- Risk Management: Aggressive positioning, move stops to break-even quickly\n\n"
+            "📊 TECHNICAL ANALYSIS:\n"
+            "Focus on liquidity, volume, momentum (RSI/MACD), Fair Value Gaps (FVG), Order Blocks, and candlestick patterns.\n"
+            "Pay attention to bearish engulfing, evening star, and gravestone doji patterns.\n\n"
+            "Generate a high-probability trade recommendation incorporating both SMC principles and Fabio Valentino methodology.\n"
+            "Your output MUST be a single JSON object with keys: 'action' (BUY/SELL/HOLD), 'entry_price', 'stop_loss', 'take_profit', 'conviction_score' (1-100), 'strategy_type' (trend_following/mean_reversion/smc_classic), and 'reasoning'."
+        )
+        user_prompt = f"Analyze the following data and provide a trade signal: {analysis_json_string}"
+
+    try:
+        # Parse the analysis data to extract market state and session info
+        analysis_data = json.loads(analysis_json_string)
+        fabio_data = analysis_data.get("fabio_valentino_analysis", {})
+        current_session = analysis_data.get("current_trading_session", "Low_Volume")
+        
+        response = call_ai_provider(ai_provider, user_prompt, system_prompt, lmstudio_url)
+        
+        if response.startswith("Error:"):
+            return {
+                "action": "HOLD",
+                "entry_price": 0,
+                "stop_loss": 0,
+                "take_profit": 0,
+                "conviction_score": 50,
+                "strategy_type": "error",
+                "reasoning": f"{ai_provider.upper()} API Error: {response}"
+            }
+        
+        # Attempt to parse the expected JSON output
+        # The model's response may be wrapped in markdown code blocks
+        response_text = response.strip()
+        if response_text.startswith('```json') and response_text.endswith('```'):
+            json_str = response_text[7:-3].strip() # Remove ```json and ```
+        else:
+            json_str = response_text
+        
+        result = json.loads(json_str)
+        
+        # Apply Fabio Valentino risk management framework
+        ltf_market_state = fabio_data.get("ltf_market_state", {})
+        enhanced_result = calculate_fabio_valentino_risk_management(
+            result, ltf_market_state, current_session
+        )
+        
+        return enhanced_result
+        
+    except Exception as e:
+        print(f"❌ Error during {ai_provider.upper()} API call or JSON parsing: {e}")
+        return {
+            "action": "HOLD",
+            "entry_price": 0,
+            "stop_loss": 0,
+            "take_profit": 0,
+            "conviction_score": 50,
+            "strategy_type": "error",
+            "reasoning": f"Parsing Error: {e}"
+        }
+
+def calculate_fabio_valentino_risk_management(signal_data, market_state, session):
+    """
+    Implement Fabio Valentino's aggressive risk management framework.
+    - Conservative risk allocation (0.25% of account per trade)
+    - Aggressive stop placement
+    - Quick break-even movement
+    - High risk-to-reward targeting
+    """
+    try:
+        entry_price = float(signal_data.get("entry_price", 0))
+        stop_loss = float(signal_data.get("stop_loss", 0))
+        target = float(signal_data.get("take_profit", 0))
+        action = signal_data.get("action", "HOLD")
+        
+        # Enhanced validation: check for valid numeric values and non-zero positions
+        if (entry_price <= 0 or stop_loss <= 0 or target <= 0 or
+            entry_price is None or stop_loss is None or target is None or
+            pd.isna(entry_price) or pd.isna(stop_loss) or pd.isna(target)):
+            # Return signal without risk management enhancements if invalid data
+            return signal_data
+        
+        # Calculate risk per trade (conservative 0.25% of account)
+        risk_amount = entry_price * 0.0025  # 0.25% risk
+        distance_to_stop = abs(entry_price - stop_loss)
+        position_size = risk_amount / distance_to_stop if distance_to_stop > 0 else 0
+        
+        # Apply aggressive stop adjustments based on Fabio's methodology
+        if market_state.get("state") == "balanced":
+            # Mean reversion - move to break-even immediately after small profit
+            break_even_buffer = entry_price * 0.001  # 0.1% buffer
+            if action == "BUY":
+                break_even_price = entry_price + break_even_buffer
+            else:
+                break_even_price = entry_price - break_even_buffer
+        else:
+            # Trend following - tighter stops due to confirmed aggression
+            break_even_buffer = entry_price * 0.0005  # 0.05% buffer
+            if action == "BUY":
+                break_even_price = entry_price + break_even_buffer
+            else:
+                break_even_price = entry_price - break_even_buffer
+        
+        # Recalculate targets based on POC targeting (70% reversal probability)
+        risk_reward_ratio = abs(target - entry_price) / distance_to_stop if distance_to_stop > 0 else 0
+        
+        # Fabio's approach: target POC, expect 70% reversal at target
+        if risk_reward_ratio < 1.5:  # Minimum 1.5:1 R:R for Fabio
+            # Adjust target to achieve better risk/reward
+            if action == "BUY":
+                target = entry_price + (distance_to_stop * 2.0)  # Target 2:1 R:R
+            else:
+                target = entry_price - (distance_to_stop * 2.0)
+        
+        # Session-based adjustments
+        if session == "New_York":
+            # NY session: trend following optimal, wider stops acceptable
+            stop_multiplier = 1.2
+        elif session == "London":
+            # London session: mean reversion optimal, tighter stops
+            stop_multiplier = 0.8
+        else:
+            # Low volume periods: very tight stops
+            stop_multiplier = 0.6
+        
+        # Apply session-based stop adjustment
+        if action == "BUY":
+            adjusted_stop = entry_price - (distance_to_stop * stop_multiplier)
+        else:
+            adjusted_stop = entry_price + (distance_to_stop * stop_multiplier)
+        
+        # Update signal with risk management enhancements
+        enhanced_signal = signal_data.copy()
+        enhanced_signal.update({
+            "stop_loss": adjusted_stop,
+            "take_profit": target,
+            "position_size": position_size,
+            "break_even_price": break_even_price,
+            "risk_reward_ratio": abs(target - entry_price) / abs(entry_price - adjusted_stop) if adjusted_stop != entry_price else 0,
+            "risk_management": {
+                "risk_per_trade_pct": 0.25,
+                "session_adjustment": stop_multiplier,
+                "break_even_trigger": break_even_buffer,
+                "poc_targeting": True,
+                "confidence_at_target": 70
+            }
+        })
+        
+        return enhanced_signal
+        
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        # Return original signal if any calculation fails
+        return signal_data
+
+# ----------------------------------------------------------------------
+# 4. GEMINI AGENT ANALYSIS FUNCTION
 # ----------------------------------------------------------------------
 
 def generate_comprehensive_analysis(analysis_json_string: str) -> dict:
-    """Uses the Gemini API to analyze data and output a comprehensive market analysis."""
+    """Uses the AI provider to analyze data and output a comprehensive market analysis."""
     
     if analysis_json_string.startswith('{"error"'):
          return json.loads(analysis_json_string)
@@ -910,102 +1687,59 @@ def generate_comprehensive_analysis(analysis_json_string: str) -> dict:
         coin_symbol = "N/A"
 
     system_prompt = (
-        f"You are a professional, high-conviction Smart Money Concepts (SMC) trading analyst. "
-        f"Analyze the provided JSON market data comprehensively, focusing on liquidity, volume, momentum (RSI/MACD), "
-        f"Fair Value Gaps (FVGs), Order Blocks, and market structure for {coin_symbol}. "
-        f"Provide a detailed analysis in the following format:\n\n"
-        f"⚡ Live {coin_symbol} Market Overview\n"
-        f"Current Price: [price] (Birdeye live)\n"
-        f"24h Change: [change]%\n"
-        f"Volume (24h): ~$[volume] ([change]%)\n"
-        f"Liquidity: ~$[liquidity] — [description of liquidity conditions].\n\n"
-        f"🔍 Price & Momentum Read\n"
-        f"Timeframe | Change | Structure | Momentum\n"
-        f"1H | [change]% | [structure] | [momentum]\n"
-        f"4H | [change]% | [structure] | [momentum]\n"
-        f"12H | [change]% | [structure] | [momentum]\n"
-        f"24H | [change]% | [structure] | [momentum]\n\n"
-        f"Short-term: [analysis].\n\n"
-        f"Medium-term: [analysis].\n\n"
-        f"Volume: [analysis].\n\n"
-        f"Wallet inflows: [analysis if available, otherwise mention it's not available].\n\n"
-        f"👉 This tells us: [synthesis of momentum and market conditions].\n\n"
-        f"💧 Liquidity & Order Flow\n"
-        f"Resting liquidity:\n\n"
-        f"Buy side: [analysis based on liquidity levels]\n"
-        f"Sell side: [analysis based on liquidity levels]\n\n"
-        f"Liquidity imbalance shows [analysis] → [trading implications].\n\n"
-        f"📊 Fair Value Gaps (FVGs)\n"
-        f"Zone | Type | Impact\n"
-        f"[list FVGs with price zones, type (bullish/bearish), and impact]\n\n"
-        f"🏗️ Order Blocks\n"
-        f"Timeframe | Type | Price Zone | Strength | Volume\n"
-        f"[list order blocks with timeframe (LTF/HTF), type (bullish/bearish), price zone (high/low), strength, and volume]\n\n"
-        f"🧭 Trading Plan\n"
-        f"🎯 [Preferred setup name] Setup ([long/short] preferred)\n\n"
-        f"Entry: [price/range]\n\n"
-        f"Stop Loss: [price]\n\n"
-        f"TP1: [price]\n\n"
-        f"TP2: [price]\n\n"
-        f"R:R: [ratio]\n\n"
-        f"[Additional setup details]\n\n"
-        f"✅ My Take\n\n"
-        f"Given the data:\n\n"
-        f"[Key points from analysis including order blocks]\n\n"
-        f"👉 I'm [bias] [detailed explanation of trading bias and plan]"
+        f"You are a professional, high-conviction Smart Money Concepts (SMC) trading analyst implementing the advanced Fabio Valentino strategy. "
+        f"Analyze the provided JSON market data comprehensively for {coin_symbol}, focusing on:\n\n"
+        f"🔍 FABIO VALENTINO METHODOLOGY:\n"
+        f"• Market State Detection: Balance vs Imbalance using Auction Market Theory\n"
+        f"• Volume Profile: POC, LVN/HVN analysis, Value Area identification\n"
+        f"• Order Flow: CVD analysis, aggressive order detection, buying/selling pressure\n"
+        f"• Trading Models: Trend Following (imbalance) vs Mean Reversion (balanced)\n"
+        f"• Session Analysis: NY (trend), London (mean reversion), timing considerations\n\n"
+        f"📊 CLASSIC SMC ELEMENTS:\n"
+        f"• Liquidity, volume, momentum (RSI/MACD)\n"
+        f"• Fair Value Gaps (FVGs), Order Blocks, market structure\n"
+        f"• Candlestick patterns (engulfing, evening star, gravestone doji)\n\n"
+        f"Provide detailed analysis in this format:\n\n"
+        f"⚡ Live {coin_symbol} Market Overview (Fabio Valentino Framework)\n"
+        f"Current Price: [price] | Trading Session: [session]\n"
+        f"Market State: [balanced/imbalanced] | Volume Profile: [analysis]\n"
+        f"24h Change: [change]% | Volume: [volume] | Liquidity: [liquidity]\n\n"
+        f"🏛️ Auction Market Theory Analysis\n"
+        f"Balance Area: [high-low range] | POC: [price] | Value Area: [analysis]\n"
+        f"Market State: [state] | Direction: [bias] | Strength: [level]\n"
+        f"Liquidity Grabs: [analysis] | Order Flow: [pressure analysis]\n\n"
+        f"📈 Multi-Timeframe Structure\n"
+        f"Timeframe | Market State | Order Flow | Opportunity\n"
+        f"LTF (5m): [state] | [flow] | [Fabio setup if any]\n"
+        f"HTF (1h): [state] | [flow] | [Bias confirmation]\n"
+        f"Daily: [state] | [flow] | [Long-term context]\n\n"
+        f"💧 Volume Profile & Liquidity\n"
+        f"POC: [price] (70% reversal probability)\n"
+        f"LVN Levels: [price levels] | HVN Levels: [price levels]\n"
+        f"Value Area: [range] | Imbalance Zones: [analysis]\n\n"
+        f"🎯 Fabio Valentino Trading Opportunities\n"
+        f"TREND FOLLOWING: [setup if imbalance detected]\n"
+        f"- Entry: [conditions] | Target: [POC] | R:R: [ratio]\n"
+        f"MEAN REVERSION: [setup if balanced detected]\n"
+        f"- Entry: [conditions] | Target: [POC] | R:R: [ratio]\n\n"
+        f"📊 Traditional SMC Analysis\n"
+        f"FVGs: [list] | Order Blocks: [list] | Patterns: [list]\n\n"
+        f"🧭 Integrated Trading Plan\n"
+        f"Preferred Setup: [Fabio model + SMC confluence]\n"
+        f"Entry: [price/range] | Stop: [aggressive placement] | TP: [POC target]\n"
+        f"Risk Management: [Fabio's aggressive approach] | Conviction: [score]\n\n"
+        f"✅ Final Assessment\n"
+        f"Market Context: [comprehensive synthesis]\n"
+        f"Bias: [directional bias] with [confidence level]\n"
+        f"Action Plan: [specific trading strategy based on Fabio Valentino methodology]"
     )
 
     user_prompt = f"Analyze the following data and provide a comprehensive market analysis: {analysis_json_string}"
 
-    try:
-        response = client.models.generate_content(
-            model='models/gemini-2.5-flash',  # Changed to stable model
-            contents=[user_prompt],
-            config=genai.types.GenerateContentConfig(
-                system_instruction=system_prompt
-            )
-        )
-        return {"analysis": response.text}
-    except Exception as e:
-        print(f"❌ Error during Gemini API call: {e}")
-        return {"error": f"AI analysis generation failed: {e}"}
-
-def generate_trade_signal(analysis_json_string: str) -> dict:
-    """Uses the Gemini API to analyze data and output a trade signal."""
-    
-    if analysis_json_string.startswith('{"error"'):
-         return json.loads(analysis_json_string)
-
-    system_prompt = (
-        "You are a professional, high-conviction Smart Money Concepts (SMC) trading agent. "
-        "Analyze the provided JSON market data, focusing on liquidity, volume, momentum (RSI/MACD), and candlestick patterns. "
-        "Pay special attention to bearish engulfing patterns, evening star patterns, and gravestone doji patterns that may indicate the end of a bull run. "
-        "Use the last 10 close prices to infer potential market structure shifts, liquidity grabs, or Fair Value Gaps (FVG). "
-        "Generate a high-probability trade recommendation for longing (BUY) or shorting (SELL). "
-        "Your output MUST be a single JSON object with the keys 'action' (BUY/SELL/HOLD), 'entry_price', 'stop_loss', 'take_profit', 'conviction_score' (1-100), and 'reasoning'."
-    )
-
-    user_prompt = f"Analyze the following data and provide a trade signal: {analysis_json_string}"
-
-    try:
-        response = client.models.generate_content(
-            model='models/gemini-2.5-flash',  # Changed to stable model
-            contents=[user_prompt],
-            config=genai.types.GenerateContentConfig(
-                system_instruction=system_prompt
-            )
-        )
-        # Attempt to parse the expected JSON output
-        # The model's response may be wrapped in markdown code blocks
-        response_text = response.text.strip()
-        if response_text.startswith('```json') and response_text.endswith('```'):
-            json_str = response_text[7:-3].strip() # Remove ```json and ```
-        else:
-            json_str = response_text
-        return json.loads(json_str)
-    except Exception as e:
-        print(f"❌ Error during Gemini API call or JSON parsing: {e}")
-        return {"error": f"AI signal generation failed: {e}"}
+    response = call_ai_provider('gemini', user_prompt, system_prompt)
+    if response.startswith("Error:"):
+        return {"error": f"AI analysis generation failed: {response}"}
+    return {"analysis": response}
 
 # ----------------------------------------------------------------------
 # 4. MAIN EXECUTION BLOCK
@@ -1121,12 +1855,58 @@ def get_token_address_from_coingecko(token_symbol: str, network: str = "solana")
         print(f"❌ ERROR fetching token address from CoinGecko: {e}")
         return None
 
+def generate_fallback_signal(analysis_json_string: str) -> dict:
+    """Generate fallback signal when no AI providers are available."""
+    try:
+        analysis_data = json.loads(analysis_json_string)
+        current_price = float(analysis_data.get("current_price", 0))
+        price_change_1h = float(analysis_data.get("price_change_1h_pct", 0))
+        rsi_14 = analysis_data.get("RSI_14", 50)
+        
+        # Simple technical analysis based signal
+        if isinstance(rsi_14, str):
+            rsi_14 = 50  # Default to neutral if RSI is not numeric
+        
+        # Simple logic: HOLD by default, BUY if oversold, SELL if overbought
+        if rsi_14 < 30:  # Oversold
+            action = "BUY"
+            conviction = 65
+            reasoning = f"Fallback Logic: Oversold conditions - 1H: {price_change_1h:.2f}%, RSI: {rsi_14:.1f}"
+        elif rsi_14 > 70:  # Overbought
+            action = "SELL"
+            conviction = 65
+            reasoning = f"Fallback Logic: Overbought conditions - 1H: {price_change_1h:.2f}%, RSI: {rsi_14:.1f}"
+        else:  # Neutral
+            action = "HOLD"
+            conviction = 60
+            reasoning = f"Fallback Logic: Neutral conditions - 1H: {price_change_1h:.2f}%, RSI: {rsi_14:.1f}"
+        
+        return {
+            "action": action,
+            "entry_price": current_price,
+            "stop_loss": current_price * (0.98 if action == "BUY" else 0.98),
+            "take_profit": current_price * (1.02 if action == "BUY" else 0.98),
+            "conviction_score": conviction,
+            "reasoning": reasoning
+        }
+    except Exception as e:
+        return {
+            "action": "HOLD",
+            "entry_price": 0,
+            "stop_loss": 0,
+            "take_profit": 0,
+            "conviction_score": 50,
+            "reasoning": f"Fallback Error: {e}"
+        }
+
 def main():
     """Executes the trading agent's workflow."""
-    parser = argparse.ArgumentParser(description='Run the Gemini Trading Agent')
+    parser = argparse.ArgumentParser(description='Run the Trading Agent')
     parser.add_argument('--token', type=str, default='SOL', help='Token symbol (e.g., SOL, BTC, ETH)')
     parser.add_argument('--chain', type=str, default='solana', help='Blockchain network (e.g., solana, ethereum, bsc)')
     parser.add_argument('--mode', type=str, default='signal', choices=['signal', 'analysis'], help='Output mode: signal for trade signal, analysis for comprehensive market analysis')
+    parser.add_argument('--ai-provider', type=str, default='auto', choices=['auto', 'gemini', 'lmstudio'], help='AI provider: auto (auto-detect), gemini (Google Gemini API), lmstudio (Local LM Studio)')
+    parser.add_argument('--lmstudio-url', type=str, default='http://127.0.0.1:1234', help='Custom LM Studio server URL (e.g., http://192.168.100.182:1234)')
     
     args = parser.parse_args()
     
@@ -1136,9 +1916,16 @@ def main():
         print(f"❌ Could not find token address for {args.token} on {args.chain}")
         return
         
-    print(f"🚀 Starting Gemini Trading Agent for {args.token} ({token_address}) on {args.chain}...")
+    print(f"🚀 Starting Trading Agent for {args.token} ({token_address}) on {args.chain}...")
     
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "REPLACE_WITH_YOUR_GEMINI_KEY":
+    # Determine which AI provider to use
+    selected_provider = get_ai_provider(args)
+    
+    if selected_provider == 'fallback':
+        print("⚠️  No AI providers available. Using fallback technical analysis...")
+    
+    # Check if we need Gemini API key for Gemini mode
+    if selected_provider == 'gemini' and (not GEMINI_API_KEY or GEMINI_API_KEY == "REPLACE_WITH_YOUR_GEMINI_KEY"):
         print("❌ CRITICAL ERROR: Gemini API Key is missing. Please set GEMINI_API_KEY.")
         return
         
@@ -1160,21 +1947,22 @@ def main():
     analysis_payload = process_data(market_data, ohlcv_data)
     
     # 3. Generate Analysis/Signal based on mode
-    print("...Sending structured data to Gemini for high-level analysis...")
     if args.mode == 'analysis':
+        print(f"...Sending structured data to {selected_provider.upper()} for comprehensive analysis...")
+        
         # Update the analysis payload to include the coin symbol properly before calling analysis
         analysis_payload_dict = json.loads(analysis_payload)
         analysis_payload_dict["coin_symbol"] = args.token
         analysis_payload = json.dumps(analysis_payload_dict)
         
-        # Optional: Print the data being sent to Gemini for debugging (can be removed)
-        # print("\n" + "-"*60)
-        # print("    DATA BEING SENT TO GEMINI FOR ANALYSIS")
-        # print("-"*60)
-        # print(json.dumps(json.loads(analysis_payload), indent=2))
-        # print("-"*60 + "\n")
+        # For analysis mode, we'll use Gemini if available, otherwise fallback
+        if selected_provider == 'gemini':
+            result = generate_comprehensive_analysis(analysis_payload)
+        else:
+            result = {
+                "analysis": f"Comprehensive analysis requires AI provider. Using {selected_provider}. Available analysis features: Market structure, Fair Value Gaps, Order Blocks, Volume analysis."
+            }
         
-        result = generate_comprehensive_analysis(analysis_payload)
         if 'analysis' in result:
             print("\n" + "="*60)
             print("    📊 COMPREHENSIVE MARKET ANALYSIS")
@@ -1184,14 +1972,23 @@ def main():
         elif 'error' in result:
             print(f"\n❌ FAILED ANALYSIS GENERATION: {result['error']}")
     else: # Default to signal mode
-        signal = generate_trade_signal(analysis_payload)
+        print(f"...Sending structured data to {selected_provider.upper()} for high-level analysis...")
+        
+        if selected_provider == 'fallback':
+            # Use simple fallback logic
+            signal = generate_fallback_signal(analysis_payload)
+            provider_name = "FALLBACK"
+        else:
+            # Use the selected AI provider
+            signal = generate_trade_signal_multi_provider(analysis_payload, selected_provider, args.lmstudio_url)
+            provider_name = selected_provider.upper()
         
         # 4. Output/Alert the Result
         if 'error' in signal:
             print(f"\n❌ FAILED SIGNAL GENERATION: {signal['error']}")
         else:
             print("\n" + "="*50)
-            print("    🧠 GEMINI HIGH-CONVICTION TRADE SIGNAL")
+            print(f"    🧠 {provider_name} HIGH-CONVICTION TRADE SIGNAL")
             print("="*50)
             coin_symbol = market_data.get('symbol', args.token)
             print(f"   COIN: {coin_symbol} @ ${market_data.get('value', 'N/A')}")
