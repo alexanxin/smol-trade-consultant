@@ -531,6 +531,205 @@ def calculate_order_blocks(df, min_body_ratio=0.6, lookback_period=20):
     
     return order_blocks
 
+def detect_high_probability_setups(analysis_data):
+    """
+    Detect high-probability trading setups using multiple confluence factors.
+    Combines Fabio Valentino methodology with traditional SMC analysis.
+    """
+    if not analysis_data:
+        return []
+    
+    setups = []
+    
+    # Extract key data
+    fabio_data = analysis_data.get("fabio_valentino_analysis", {})
+    ltf_market_state = fabio_data.get("ltf_market_state", {})
+    ltf_order_flow = fabio_data.get("ltf_order_flow", {})
+    htf_market_state = fabio_data.get("htf_market_state", {})
+    ltf_volume_profile = analysis_data.get("ltf_volume_profile", {})
+    htf_volume_profile = analysis_data.get("htf_volume_profile", {})
+    current_session = analysis_data.get("current_trading_session", "Low_Volume")
+    
+    # Current market data
+    current_price = float(analysis_data.get("current_price", 0))
+    rsi_14 = analysis_data.get("RSI_14", 50)
+    macd_signal = analysis_data.get("MACD_signal_cross", "Neutral")
+    
+    # Pattern analysis
+    ltf_patterns = analysis_data.get("ltf_candlestick_patterns", [])
+    htf_patterns = analysis_data.get("htf_candlestick_patterns", [])
+    daily_patterns = analysis_data.get("daily_candlestick_patterns", [])
+    
+    # 1. FABIO VALENTINO HIGH-PROBABILITY SETUPS
+    
+    # A. Trend Following Setup (Imbalance Phase)
+    if (ltf_market_state.get("state") == "imbalanced" and
+        ltf_order_flow.get("aggressive_orders", False) and
+        current_session == "New_York"):
+        
+        setup_score = 0
+        confluence_factors = []
+        
+        # Volume Profile Validation
+        poc_price = ltf_volume_profile.get("poc_price", 0)
+        if poc_price > 0:
+            poc_distance = abs(current_price - poc_price) / current_price
+            if poc_distance < 0.02:  # Within 2% of POC
+                setup_score += 25
+                confluence_factors.append("Near POC target")
+        
+        # Order Flow Confirmation
+        if ltf_order_flow.get("cvd_trend", "") == ltf_market_state.get("imbalance_direction"):
+            setup_score += 20
+            confluence_factors.append("CVD trend alignment")
+        
+        # Multi-timeframe bias
+        htf_direction = htf_market_state.get("imbalance_direction")
+        if htf_direction and htf_direction == ltf_market_state.get("imbalance_direction"):
+            setup_score += 15
+            confluence_factors.append("HTF bias alignment")
+        
+        # RSI confluence
+        if isinstance(rsi_14, (int, float)):
+            if ltf_market_state.get("imbalance_direction") == "bullish" and 30 < rsi_14 < 70:
+                setup_score += 15
+                confluence_factors.append("RSI in favorable range")
+            elif ltf_market_state.get("imbalance_direction") == "bearish" and 30 < rsi_14 < 70:
+                setup_score += 15
+                confluence_factors.append("RSI in favorable range")
+        
+        # High conviction patterns
+        high_strength_patterns = [p for p in ltf_patterns if p.get("strength") == "high"]
+        if high_strength_patterns:
+            setup_score += 15
+            confluence_factors.append(f"{len(high_strength_patterns)} high-strength patterns")
+        
+        if setup_score >= 60:  # Threshold for high probability
+            setups.append({
+                "setup_type": "Trend Following",
+                "direction": ltf_market_state.get("imbalance_direction"),
+                "probability": min(setup_score, 95),
+                "entry_criteria": f"Break of structure with {ltf_market_state.get('imbalance_direction')} bias",
+                "target": f"POC at ${poc_price:.4f}" if poc_price > 0 else "Previous balance area",
+                "confidence_level": "HIGH" if setup_score >= 80 else "MEDIUM",
+                "confluence_factors": confluence_factors,
+                "session_optimization": "NY Session - Optimal for trend following",
+                "risk_management": "Aggressive stops below/above aggression"
+            })
+    
+    # B. Mean Reversion Setup (Balanced Phase)
+    elif (ltf_market_state.get("state") == "balanced" and
+          current_session in ["London", "New_York"]):
+        
+        setup_score = 0
+        confluence_factors = []
+        
+        # Check for deep discount/premium
+        balance_center = ltf_market_state.get("balance_center", current_price)
+        balance_range = ltf_market_state.get("balance_high", current_price) - ltf_market_state.get("balance_low", current_price)
+        
+        price_vs_balance = (current_price - balance_center) / balance_range if balance_range > 0 else 0
+        
+        if abs(price_vs_balance) > 0.015:  # 1.5% away from balance center
+            setup_score += 30
+            confluence_factors.append("Price at deep discount/premium")
+        
+        # Volume profile support/resistance
+        poc_price = ltf_volume_profile.get("poc_price", 0)
+        if poc_price > 0:
+            poc_distance = abs(current_price - poc_price) / current_price
+            if poc_distance < 0.025:  # Within 2.5% of POC
+                setup_score += 25
+                confluence_factors.append("Near POC (70% reversal probability)")
+        
+        # Order flow confirmation
+        if ltf_order_flow.get("cvd_trend", "") != ltf_market_state.get("imbalance_direction"):
+            setup_score += 20
+            confluence_factors.append("Counter-trend CVD signal")
+        
+        # RSI oversold/overbought
+        if isinstance(rsi_14, (int, float)):
+            if price_vs_balance < -0.015 and rsi_14 < 40:  # Deep discount + oversold
+                setup_score += 20
+                confluence_factors.append("Oversold conditions")
+            elif price_vs_balance > 0.015 and rsi_14 > 60:  # Deep premium + overbought
+                setup_score += 20
+                confluence_factors.append("Overbought conditions")
+        
+        # Session timing
+        if current_session == "London":
+            setup_score += 10
+            confluence_factors.append("London session optimal for mean reversion")
+        
+        if setup_score >= 65:  # Slightly higher threshold for mean reversion
+            direction = "long" if price_vs_balance < 0 else "short"
+            setups.append({
+                "setup_type": "Mean Reversion",
+                "direction": direction,
+                "probability": min(setup_score, 95),
+                "entry_criteria": "Retracement from deep discount/premium",
+                "target": f"POC at ${poc_price:.4f}" if poc_price > 0 else "Balance center",
+                "confidence_level": "HIGH" if setup_score >= 85 else "MEDIUM",
+                "confluence_factors": confluence_factors,
+                "session_optimization": f"{current_session} session timing",
+                "risk_management": "Tight stops, quick break-even movement"
+            })
+    
+    # 2. TRADITIONAL SMC HIGH-PROBABILITY SETUPS
+    
+    # C. FVG Continuation Setup
+    ltf_fvgs = analysis_data.get("ltf_fair_value_gaps", [])
+    if ltf_fvgs:
+        # Check for price interacting with FVG
+        relevant_fvgs = [fvg for fvg in ltf_fvgs if (fvg.get("type") == "bullish" and rsi_14 < 50) or (fvg.get("type") == "bearish" and rsi_14 >= 50)]
+        
+        if relevant_fvgs:
+            fvg_score = 0
+            confluence_factors = []
+            
+            # Multiple timeframe FVG alignment
+            htf_fvgs = analysis_data.get("htf_fair_value_gaps", [])
+            aligned_fvgs = 0
+            
+            for ltf_fvg in relevant_fvgs:
+                for htf_fvg in htf_fvgs:
+                    if (ltf_fvg.get("type") == htf_fvg.get("type") and
+                        abs(ltf_fvg.get("zone", [0])[0] - htf_fvg.get("zone", [0])[0]) / current_price < 0.01):
+                        aligned_fvgs += 1
+                        break
+            
+            if aligned_fvgs > 0:
+                fvg_score += 25
+                confluence_factors.append("Multi-timeframe FVG alignment")
+            
+            # Pattern confluence
+            pattern_count = len([p for p in ltf_patterns if p.get("strength") == "high"])
+            if pattern_count >= 2:
+                fvg_score += 20
+                confluence_factors.append(f"{pattern_count} high-strength patterns")
+            
+            # Volume confirmation
+            ltf_volume_analytics = analysis_data.get("ltf_volume_analytics", {})
+            if ltf_volume_analytics.get("volume_spike_detected", False):
+                fvg_score += 15
+                confluence_factors.append("Volume spike confirmation")
+            
+            if fvg_score >= 50:
+                setups.append({
+                    "setup_type": "FVG Continuation",
+                    "direction": "bullish" if rsi_14 < 50 else "bearish",
+                    "probability": fvg_score,
+                    "entry_criteria": "Price reaction at FVG level",
+                    "target": "Next FVG or structure level",
+                    "confidence_level": "MEDIUM" if fvg_score >= 70 else "LOW",
+                    "confluence_factors": confluence_factors,
+                    "session_optimization": "Any session with volume",
+                    "risk_management": "Stop below/above FVG boundary"
+                })
+    
+    return sorted(setups, key=lambda x: x.get("probability", 0), reverse=True)
+
+
 def detect_candlestick_patterns(df):
     """
     Detect candlestick patterns that may indicate potential bull run ending patterns.
@@ -998,6 +1197,10 @@ def process_data(market_data: dict, ohlcv_data: dict) -> str:
     htf_order_flow = {}
     daily_order_flow = {}
     fabio_valentino_opportunities = {}
+    
+    # High Probability Setup Detection
+    high_probability_setups = []
+
 
     if ltf_data:
         # Convert LTF OHLCV data to a Pandas DataFrame for technical analysis
@@ -1993,15 +2196,43 @@ def main():
             # Update the analysis payload to include the coin symbol properly
             analysis_payload_dict = json.loads(analysis_payload)
             analysis_payload_dict["coin_symbol"] = coin_symbol
+            
+            # Detect high-probability setups
+            high_probability_setups = detect_high_probability_setups(analysis_payload_dict)
+            
             analysis_payload = json.dumps(analysis_payload_dict)
             
             # Use the new formatter for beautiful output
             OutputFormatter.format_trade_signal(signal, market_data, coin_symbol)
             
+            # Display high-probability setups if any detected
+            if high_probability_setups:
+                print(f"\n🎯 HIGH-PROBABILITY SETUPS DETECTED ({len(high_probability_setups)})")
+                print("=" * 80)
+                for i, setup in enumerate(high_probability_setups, 1):
+                    probability_icon = "🔥" if setup.get("probability", 0) >= 80 else "⭐" if setup.get("probability", 0) >= 60 else "⚡"
+                    direction_icon = "📈" if setup.get("direction") in ["bullish", "long"] else "📉" if setup.get("direction") in ["bearish", "short"] else "⚖️"
+                    
+                    print(f"\n{i}. {probability_icon} {setup.get('setup_type', 'Unknown')} - {setup.get('confidence_level', 'MEDIUM')} PROBABILITY")
+                    print(f"   {direction_icon} Direction: {setup.get('direction', 'N/A').title()}")
+                    print(f"   📊 Probability: {setup.get('probability', 0)}%")
+                    print(f"   🎯 Entry: {setup.get('entry_criteria', 'N/A')}")
+                    print(f"   🏆 Target: {setup.get('target', 'N/A')}")
+                    print(f"   ⚙️ Session: {setup.get('session_optimization', 'N/A')}")
+                    print(f"   🛡️ Risk Mgmt: {setup.get('risk_management', 'N/A')}")
+                    
+                    confluence_factors = setup.get('confluence_factors', [])
+                    if confluence_factors:
+                        print(f"   ✅ Confluence Factors:")
+                        for factor in confluence_factors:
+                            print(f"      • {factor}")
+                print("\n" + "=" * 80)
+            
             # Add Fabio Valentino analysis if available
             fabio_data = analysis_payload_dict.get('fabio_valentino_analysis', {})
             current_session = analysis_payload_dict.get('current_trading_session', 'Unknown')
             if fabio_data:
+                # Pass the complete analysis data including candlestick patterns
                 OutputFormatter.format_fabio_valentino_analysis(fabio_data, current_session, analysis_payload_dict)
             
             # NOTE: For a production system, you would replace this print block

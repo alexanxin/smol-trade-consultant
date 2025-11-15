@@ -1,0 +1,119 @@
+{
+    "name": "Trading Agent Analysis Webhook",
+    "nodes": [
+        {
+            "parameters": {
+                "path": "trading-analysis",
+                "authentication": "none",
+                "options": {
+                    "response": {
+                        "mode": "lastNode"
+                    }
+                }
+            },
+            "name": "Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 1,
+            "position": [
+                240,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "functionCode": "// Extract token and chain from request body\nconst body = $json\n\n// Set defaults if not provided\nconst token = body.token || 'SOL'\nconst chain = body.chain || 'solana'\n\nreturn {\n  token,\n  chain,\n  body\n}"
+            },
+            "name": "Extract Parameters",
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [
+                460,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "command": "cd /Users/aleksandar/Desktop/Raboten/trader-agent && python3 frontend/src/lib/trader-agent-clean.py {{ $node[\"Extract Parameters\"].json.token }} {{ $node[\"Extract Parameters\"].json.chain }}"
+            },
+            "name": "Execute Script",
+            "type": "n8n-nodes-base.executeCommand",
+            "typeVersion": 1,
+            "position": [
+                680,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "functionCode": "// Parse the Python script output\ntry {\n  const output = $node[\"Execute Script\"].json.stdout\n  const parsedData = JSON.parse(output)\n  return parsedData\n} catch (error) {\n  return {\n    error: true,\n    errorMessage: error.message,\n    formatted: false,\n    token: $node[\"Extract Parameters\"].json.token,\n    currentPrice: 0,\n    action: 'HOLD',\n    entryPrice: 0,\n    stopLoss: 0,\n    takeProfit: 0,\n    convictionScore: 0,\n    reasoning: 'Script execution failed: ' + error.message,\n    timestamp: new Date().toISOString()\n  }\n}"
+            },
+            "name": "Parse JSON Response",
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [
+                900,
+                300
+            ]
+        },
+        {
+            "parameters": {
+                "functionCode": "// Return the parsed response directly\nreturn $node[\"Parse JSON Response\"].json"
+            },
+            "name": "Return Response",
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [
+                1120,
+                300
+            ]
+        }
+    ],
+    "connections": {
+        "Webhook": {
+            "main": [
+                [
+                    {
+                        "node": "Extract Parameters",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Extract Parameters": {
+            "main": [
+                [
+                    {
+                        "node": "Execute Script",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Execute Script": {
+            "main": [
+                [
+                    {
+                        "node": "Parse JSON Response",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Parse JSON Response": {
+            "main": [
+                [
+                    {
+                        "node": "Return Response",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {},
+    "staticData": null
+}
