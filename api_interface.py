@@ -20,6 +20,8 @@ import traceback
 # Add the current directory to Python path to import trader-agent
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from trader_agent_core import TraderAgent
+
 app = FastAPI(
     title="Trader Agent API",
     description="REST API interface for the trading agent analysis script",
@@ -75,9 +77,37 @@ class ErrorResponse(BaseModel):
     error: str
     traceback: Optional[str] = None
 
+async def run_trader_agent_async(token: str, chain: str, mode: str, provider: str) -> Dict[str, Any]:
+    """
+    Execute the trader agent asynchronously using the core module.
+    """
+    try:
+        agent = TraderAgent()
+        market_data, ohlcv_data = await agent.fetch_data(token, chain)
+        
+        if "error" in market_data:
+            return {"success": False, "error": market_data["error"]}
+            
+        analysis_result = agent.analyze_market(market_data, ohlcv_data)
+        analysis_result["coin_symbol"] = token
+        
+        if mode == "analysis":
+            # For comprehensive analysis, we currently return the structured data
+            # Ideally, we would have a specific prompt for this in core
+            # For now, let's return the JSON dump which the frontend can parse
+            return {"success": True, "output": json.dumps(analysis_result, default=str)}
+        else:
+            # Signal mode
+            signal = await agent.generate_signal(analysis_result, provider)
+            return {"success": True, "output": json.dumps(signal)}
+            
+    except Exception as e:
+        return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
+
 def execute_trader_agent(args: Dict[str, str]) -> Dict[str, Any]:
     """
     Execute the trader-agent.py script with the given arguments
+    DEPRECATED: Use run_trader_agent_async instead
     """
     try:
         # Build the command
@@ -340,15 +370,16 @@ async def get_trading_signal(request: TradingAnalysisRequest):
     """
     try:
         # Prepare arguments for the trader agent (hardcoded to Gemini)
-        args = {
-            "token": request.token,
-            "chain": request.chain,
-            "mode": "signal",
-            "ai_provider": "gemini"
-        }
+        # args = {
+        #     "token": request.token,
+        #     "chain": request.chain,
+        #     "mode": "signal",
+        #     "ai_provider": "gemini"
+        # }
 
         # Execute the trader agent
-        result = execute_trader_agent(args)
+        # result = execute_trader_agent(args)
+        result = await run_trader_agent_async(request.token, request.chain, "signal", "gemini")
         
         if not result["success"]:
             raise HTTPException(status_code=500, detail=result["error"])
@@ -376,15 +407,16 @@ async def get_comprehensive_analysis(request: TradingAnalysisRequest):
     """
     try:
         # Prepare arguments for the trader agent (hardcoded to Gemini)
-        args = {
-            "token": request.token,
-            "chain": request.chain,
-            "mode": "analysis",
-            "ai_provider": "gemini"
-        }
+        # args = {
+        #     "token": request.token,
+        #     "chain": request.chain,
+        #     "mode": "analysis",
+        #     "ai_provider": "gemini"
+        # }
 
         # Execute the trader agent
-        result = execute_trader_agent(args)
+        # result = execute_trader_agent(args)
+        result = await run_trader_agent_async(request.token, request.chain, "analysis", "gemini")
         
         if not result["success"]:
             raise HTTPException(status_code=500, detail=result["error"])
@@ -408,16 +440,17 @@ async def simple_analysis(request: SimpleAnalysisRequest):
     """
     try:
         # Prepare arguments for the trader agent with user-specified or default AI provider
-        args = {
-            "token": request.token,
-            "chain": request.chain,
-            "mode": "signal",
-            "ai_provider": request.ai_provider
-        }
+        # args = {
+        #     "token": request.token,
+        #     "chain": request.chain,
+        #     "mode": "signal",
+        #     "ai_provider": request.ai_provider
+        # }
 
         
         # Execute the trader agent
-        result = execute_trader_agent(args)
+        # result = execute_trader_agent(args)
+        result = await run_trader_agent_async(request.token, request.chain, "signal", request.ai_provider)
         
         if not result["success"]:
             return JSONResponse(
