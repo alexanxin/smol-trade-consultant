@@ -2091,7 +2091,7 @@ def generate_fallback_signal(analysis_json_string: str) -> dict:
         return {
             "action": action,
             "entry_price": current_price,
-            "stop_loss": current_price * (0.98 if action == "BUY" else 0.98),
+            "stop_loss": current_price * (0.98 if action == "BUY" else 1.02),
             "take_profit": current_price * (1.02 if action == "BUY" else 0.98),
             "conviction_score": conviction,
             "reasoning": reasoning

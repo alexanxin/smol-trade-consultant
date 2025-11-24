@@ -529,10 +529,57 @@ class TraderAgent:
 
     def generate_signal_prompt(self, analysis_result: Dict) -> str:
         """
-        Generates the prompt for the AI model.
+        Generates the prompt for the AI model with rich text summary.
         """
-        # Construct a concise but data-rich prompt
-        return json.dumps(analysis_result, default=str)
+        # Create a text summary of the technicals
+        tech_summary = self._generate_technical_summary(analysis_result)
+        
+        # Combine structured data and text summary
+        prompt_data = {
+            "summary": tech_summary,
+            "data": analysis_result
+        }
+        
+        return json.dumps(prompt_data, default=str)
+
+    def _generate_technical_summary(self, analysis_result: Dict) -> str:
+        """
+        Generates a human-readable summary of the technical analysis.
+        """
+        summary = []
+        
+        # Fabio Analysis
+        fabio = analysis_result.get("fabio_analysis", {})
+        summary.append(f"Market State: {fabio.get('market_state', 'unknown').upper()}")
+        summary.append(f"Bias: {fabio.get('bias', 'neutral').upper()}")
+        
+        opportunities = fabio.get("opportunities", [])
+        if opportunities:
+            summary.append(f"Detected Opportunities: {len(opportunities)}")
+            for opp in opportunities:
+                summary.append(f"- {opp.get('type')}: {opp.get('direction')} ({opp.get('trigger')})")
+        else:
+            summary.append("No specific Fabio Valentino opportunities detected.")
+            
+        # Technicals (LTF)
+        ltf = analysis_result.get("technical_analysis", {}).get("ltf", {})
+        
+        # RSI
+        rsi = ltf.get("rsi")
+        if rsi:
+            summary.append(f"RSI (LTF): {rsi:.2f}")
+            
+        # FVGs
+        fvgs = ltf.get("fvgs", [])
+        if fvgs:
+            summary.append(f"Active FVGs (LTF): {len(fvgs)}")
+            
+        # Order Blocks
+        obs = ltf.get("order_blocks", [])
+        if obs:
+            summary.append(f"Order Blocks (LTF): {len(obs)}")
+            
+        return "\n".join(summary)
 
     async def generate_signal(self, analysis_result: Dict, provider: str = "gemini") -> Dict:
         """
@@ -540,14 +587,72 @@ class TraderAgent:
         """
         prompt = self.generate_signal_prompt(analysis_result)
         system_prompt = (
-            "You are a professional trading agent. Analyze the provided market data and generate a trading signal. "
-            "Output MUST be a JSON object with keys: action, entry_price, stop_loss, take_profit, conviction_score, reasoning."
+            "You are a professional trading agent following the Fabio Valentino Smart Money Concepts strategy. "
+            "Your goal is to identify high-probability setups based on Market Structure, Liquidity, and Displacement.\n\n"
+            "RULES:\n"
+            "1. Identify the Market State (Balanced vs Imbalanced).\n"
+            "2. Determine Bias based on Market Structure (Higher Highs/Lows).\n"
+            "3. Look for Liquidity Sweeps followed by Displacement (FVGs).\n"
+            "4. Validate setups with RSI and Order Blocks.\n"
+            "5. ONLY signal a trade if conviction is HIGH (>70).\n\n"
+            "Output MUST be a JSON object with keys: action (BUY/SELL/HOLD), entry_price, stop_loss, take_profit, conviction_score, reasoning."
         )
         
         if provider == "gemini":
             return await self._call_gemini(prompt, system_prompt)
         else:
             return {"error": f"Provider {provider} not supported"}
+
+    async def generate_comprehensive_analysis(self, analysis_result: Dict, provider: str = "gemini") -> Dict:
+        """
+        Generates a comprehensive market analysis using the specified AI provider.
+        """
+        prompt = self.generate_signal_prompt(analysis_result)
+        system_prompt = (
+            "You are a professional trading agent. Analyze the provided market data and generate a comprehensive market analysis report. "
+            "The report should cover: Market Structure, Trend Analysis, Key Levels (Support/Resistance), Volume Analysis, and Potential Scenarios. "
+            "Also provide a 'Sentiment Score' from 0 (Bearish) to 100 (Bullish).\n\n"
+            "Output MUST be a detailed text report in Markdown format. Include the Sentiment Score at the top."
+        )
+        
+        if provider == "gemini":
+            # We reuse _call_gemini but we need to handle the fact that it might expect JSON
+            # Actually _call_gemini tries to parse JSON but returns raw text if it fails or if it's not JSON
+            # Let's modify _call_gemini or create a new method if needed.
+            # For now, let's use _call_gemini and if it returns a dict with "error" we know it failed.
+            # But wait, _call_gemini returns a dict. If the AI returns text, _call_gemini might fail to parse it as JSON.
+            # We should probably have a generic _call_ai method that returns text, and then specific wrappers for signal (JSON) vs analysis (Text).
+            
+            # Let's create a specific method for text generation to avoid breaking existing logic
+            return await self._call_gemini_text(prompt, system_prompt)
+        else:
+            return {"error": f"Provider {provider} not supported"}
+
+    async def _call_gemini_text(self, prompt: str, system_prompt: str) -> Dict:
+        """
+        Calls Gemini API and returns the raw text response.
+        """
+        full_prompt = f"{system_prompt}\n\n{prompt}"
+        
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'gemini', full_prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy()
+            )
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                return {"error": f"Gemini CLI failed: {stderr.decode()}"}
+                
+            response_text = stdout.decode().strip()
+            return {"analysis": response_text}
+                
+        except FileNotFoundError:
+            return {"error": "Gemini CLI not found"}
+        except Exception as e:
+            return {"error": f"Error calling Gemini: {str(e)}"}
 
     async def _call_gemini(self, prompt: str, system_prompt: str) -> Dict:
         """
@@ -571,11 +676,27 @@ class TraderAgent:
                 
             response_text = stdout.decode().strip()
             
-            # Extract JSON
-            if response_text.startswith('```json') and response_text.endswith('```'):
-                json_str = response_text[7:-3].strip()
+            # Extract JSON - handle multiple formats
+            # 1. Try markdown code block with ```json
+            import re
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1).strip()
+            # 2. Try plain markdown code block with ```
+            elif '```' in response_text:
+                code_match = re.search(r'```\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+                if code_match:
+                    json_str = code_match.group(1).strip()
+                else:
+                    json_str = response_text
+            # 3. Try to find JSON object directly in the text
             else:
-                json_str = response_text
+                # Look for a JSON object pattern
+                obj_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
+                if obj_match:
+                    json_str = obj_match.group(0).strip()
+                else:
+                    json_str = response_text
                 
             try:
                 return json.loads(json_str)

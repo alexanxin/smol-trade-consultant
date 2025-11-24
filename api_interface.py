@@ -92,14 +92,26 @@ async def run_trader_agent_async(token: str, chain: str, mode: str, provider: st
         analysis_result["coin_symbol"] = token
         
         if mode == "analysis":
-            # For comprehensive analysis, we currently return the structured data
-            # Ideally, we would have a specific prompt for this in core
-            # For now, let's return the JSON dump which the frontend can parse
-            return {"success": True, "output": json.dumps(analysis_result, default=str)}
+            # For comprehensive analysis, use the AI to generate a report
+            analysis_report = await agent.generate_comprehensive_analysis(analysis_result, provider)
+            
+            if "error" in analysis_report:
+                return {"success": False, "error": analysis_report["error"]}
+                
+            # Return the analysis text
+            return {
+                "success": True, 
+                "output": analysis_report["analysis"],
+                "fabio_analysis": analysis_result.get("fabio_analysis")
+            }
         else:
             # Signal mode
             signal = await agent.generate_signal(analysis_result, provider)
-            return {"success": True, "output": json.dumps(signal)}
+            return {
+                "success": True, 
+                "output": json.dumps(signal),
+                "fabio_analysis": analysis_result.get("fabio_analysis")
+            }
             
     except Exception as e:
         return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
@@ -262,14 +274,14 @@ async def parse_signal_output(output: str, market_data: Dict[str, Any], coin_sym
             return {
                 "success": True,
                 "action": signal_data.get("action", "HOLD"),
-                "entry_price": float(signal_data.get("entry_price", 0)),
-                "stop_loss": float(signal_data.get("stop_loss", 0)),
-                "take_profit": float(signal_data.get("take_profit", 0)),
-                "conviction_score": int(signal_data.get("conviction_score", 50)),
+                "entry_price": float(signal_data.get("entry_price") or 0),
+                "stop_loss": float(signal_data.get("stop_loss") or 0),
+                "take_profit": float(signal_data.get("take_profit") or 0),
+                "conviction_score": int(signal_data.get("conviction_score") or 50),
                 "strategy_type": signal_data.get("strategy_type", "extracted"),
                 "reasoning": signal_data.get("reasoning", "Data extracted from output"),
                 "coin_symbol": coin_symbol,
-                "current_price": float(signal_data.get("entry_price", 0)),
+                "current_price": float(signal_data.get("entry_price") or 0),
                 "market_data": market_data,
                 "fabio_analysis": fabio_data
             }
