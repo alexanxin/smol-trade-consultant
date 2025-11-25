@@ -12,6 +12,9 @@ A Python-based trading agent that uses AI to analyze cryptocurrency market data 
 - Dual-mode operation: Trade signals or comprehensive market analysis
 - Smart Money Concepts (SMC) based analysis including liquidity analysis, order flow, and market structure
 - Command-line interface for easy execution
+- **Multi-Agent System**:
+    - **News Agent**: Fetches real-time news from Google News RSS for sentiment analysis
+    - **Risk Manager Agent**: Critiques and validates trade signals to reduce false positives
 
 ## Enhanced Capabilities
 
@@ -31,7 +34,15 @@ A Python-based trading agent that uses AI to analyze cryptocurrency market data 
 - **Fair Value Gaps (FVGs)**: Automatic FVG detection with zone, type, and impact analysis
 - **Trading Plan Generation**: Entry/exit levels with risk-to-reward ratio calculations
 - **Analyst's Take**: Professional market interpretation with clear trading bias
+- **Analyst's Take**: Professional market interpretation with clear trading bias
 
+### Multi-Agent Architecture
+
+The system now employs a collaborative multi-agent approach:
+
+1.  **News Agent**: Scours Google News RSS for the latest headlines related to the specific token to provide qualitative context (sentiment, major events).
+2.  **Strategy Agent**: The core analyst that processes technical data and news to generate the initial trade signal.
+3.  **Risk Manager Agent**: A "Devil's Advocate" agent that critiques the Strategy Agent's signal. It checks for weak reasoning, conflicting data, or high risk, and has the authority to **reject** or **downgrade** the signal.
 ### Optimal Trading Timeframes & Styles
 
 The trader agent is **optimally designed for scalping and short-term day trading** with institutional-grade precision through Auction Market Theory (AMT) integration.
@@ -210,7 +221,7 @@ This approach can reduce costs by **80-90%** while maintaining effective market 
 
 2. Install the required dependencies:
    ```bash
-   pip install requests google-genai pandas ta python-dotenv
+   pip install requests google-genai pandas ta python-dotenv feedparser
    ```
 
 Or install all dependencies from the requirements.txt file:
