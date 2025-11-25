@@ -233,6 +233,37 @@ class OutputFormatter:
         fmt.key_value("Token", coin_symbol, icon='money')
         fmt.key_value("Price", f"${market_data.get('value', 'N/A')}", icon='chart', color='cyan')
         
+        # News Summary
+        if 'news_summary' in signal:
+             fmt.blank_line()
+             fmt.subsection_header("News Analysis", icon='globe')
+             news_lines = signal['news_summary'].split('\n')
+             for line in news_lines:
+                 if line.startswith('-'):
+                     print(f"  {line}")
+                 elif line.startswith('---'):
+                     continue
+                 else:
+                     print(f"  {line}")
+
+        # Risk Assessment
+        if 'risk_assessment' in signal:
+            risk = signal['risk_assessment']
+            fmt.blank_line()
+            fmt.subsection_header("Risk Manager Assessment", icon='shield')
+            
+            approved = risk.get('approved', True)
+            status_color = 'green' if approved else 'red'
+            status_icon = 'check' if approved else 'cross'
+            fmt.key_value("Status", "APPROVED" if approved else "REJECTED", icon=status_icon, color=status_color)
+            
+            risk_score = risk.get('risk_score', 0)
+            score_color = 'green' if risk_score <= 3 else 'yellow' if risk_score <= 7 else 'red'
+            fmt.key_value("Risk Score", f"{risk_score}/10", icon='warning', color=score_color)
+            
+            critique = risk.get('critique', 'No critique provided.')
+            print(f"  {fmt.bold('Critique')}: {critique}")
+        
         # Trading Action
         fmt.blank_line()
         fmt.subsection_header("Trading Recommendation", icon='target')

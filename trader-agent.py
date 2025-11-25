@@ -9,6 +9,8 @@ import argparse
 import subprocess
 from dotenv import load_dotenv
 from output_formatter import OutputFormatter
+from news_agent import NewsAgent
+from risk_manager import RiskManager
 
 # Load environment variables from .env file
 load_dotenv()
@@ -2184,8 +2186,52 @@ def main():
             provider_name = "FALLBACK"
         else:
             # Use the selected AI provider
-            signal = generate_trade_signal_multi_provider(analysis_payload, selected_provider, args.lmstudio_url)
+            
+            # --- MULTI-AGENT PIPELINE START ---
+            
+            # 1. News Agent
+            print("...News Agent: Fetching recent news...")
+            news_agent = NewsAgent()
+            news_summary = news_agent.fetch_news(args.token)
+            
+            # Inject news into analysis payload
+            payload_dict = json.loads(analysis_payload)
+            payload_dict["news_summary"] = news_summary
+            analysis_payload_with_news = json.dumps(payload_dict)
+            
+            # 2. Strategy Agent (Existing)
+            print(f"...Strategy Agent: Generating signal using {selected_provider.upper()}...")
+            signal = generate_trade_signal_multi_provider(analysis_payload_with_news, selected_provider, args.lmstudio_url)
             provider_name = selected_provider.upper()
+            
+            # Add news summary to signal for display
+            signal['news_summary'] = news_summary
+            
+            # 3. Risk Manager Agent
+            if 'error' not in signal:
+                print(f"...Risk Manager Agent: Critiquing signal...")
+                risk_manager = RiskManager()
+                
+                # Define callback for Risk Manager to use the same AI provider
+                def risk_ai_callback(user_prompt, system_prompt):
+                    return call_ai_provider(selected_provider, user_prompt, system_prompt, args.lmstudio_url)
+                
+                risk_assessment = risk_manager.assess_risk(signal, market_data, news_summary, risk_ai_callback)
+                
+                # Merge Risk Assessment into Signal
+                signal['risk_assessment'] = risk_assessment
+                
+                # Apply Risk Manager's verdict
+                if not risk_assessment.get('approved', True):
+                    print("⚠️  Risk Manager REJECTED the trade.")
+                    signal['action'] = "HOLD (Risk Manager Rejection)"
+                    signal['reasoning'] = f"[RISK REJECTED] {risk_assessment.get('critique')} | Original: {signal.get('reasoning')}"
+                    if 'modified_conviction' in risk_assessment:
+                        signal['conviction_score'] = risk_assessment['modified_conviction']
+                else:
+                    print("✅ Risk Manager APPROVED the trade.")
+            
+            # --- MULTI-AGENT PIPELINE END ---
         
         # 4. Output/Alert the Result
         if 'error' in signal:
