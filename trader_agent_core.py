@@ -581,11 +581,16 @@ class TraderAgent:
             
         return "\n".join(summary)
 
-    async def generate_signal(self, analysis_result: Dict, provider: str = "gemini") -> Dict:
+    async def generate_signal(self, analysis_result: Dict, provider: str = "gemini", feedback: str = None) -> Dict:
         """
         Generates a trading signal using the specified AI provider.
         """
         prompt = self.generate_signal_prompt(analysis_result)
+        
+        # Append feedback if provided (Debate Loop)
+        if feedback:
+            prompt += f"\n\nIMPORTANT FEEDBACK FROM RISK MANAGER:\n{feedback}\n\nPlease refine your analysis and signal based on this feedback. If the previous signal was rejected due to risk, find a better setup or adjust parameters."
+
         system_prompt = (
             "You are a professional trading agent following the Fabio Valentino Smart Money Concepts strategy. "
             "Your goal is to identify high-probability setups based on Market Structure, Liquidity, and Displacement.\n\n"

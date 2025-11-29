@@ -272,9 +272,9 @@ class OutputFormatter:
         # Entry & Targets
         fmt.blank_line()
         fmt.subsection_header("Entry & Targets", icon='compass')
-        fmt.key_value("Entry Price", f"${signal.get('entry_price', 0):.4f}", icon='unlock')
-        fmt.key_value("Stop Loss", f"${signal.get('stop_loss', 0):.4f}", icon='shield', color='red')
-        fmt.key_value("Take Profit", f"${signal.get('take_profit', 0):.4f}", icon='target', color='green')
+        fmt.key_value("Entry Price", f"${(signal.get('entry_price') or 0):.4f}", icon='unlock')
+        fmt.key_value("Stop Loss", f"${(signal.get('stop_loss') or 0):.4f}", icon='shield', color='red')
+        fmt.key_value("Take Profit", f"${(signal.get('take_profit') or 0):.4f}", icon='target', color='green')
         
         # Risk Management
         if 'risk_reward_ratio' in signal:

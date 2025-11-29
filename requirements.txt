@@ -5,3 +5,8 @@ ta
 python-dotenv
 aiohttp
 feedparser
+solana
+solders
+base58
+driftpy
+anchorpy

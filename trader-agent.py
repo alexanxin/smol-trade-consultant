@@ -11,6 +11,11 @@ from dotenv import load_dotenv
 from output_formatter import OutputFormatter
 from news_agent import NewsAgent
 from risk_manager import RiskManager
+from database import LifecycleDatabase
+from wallet_manager import SolanaWallet
+from jupiter_client import JupiterClient
+from drift_client_wrapper import DriftClientWrapper
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -1690,7 +1695,7 @@ def call_ai_provider(provider: str, prompt: str, system_prompt: str = None, lmst
     else:
         return f"Unknown AI provider: {provider}"
 
-def generate_trade_signal_multi_provider(analysis_json_string: str, ai_provider: str, lmstudio_url: str = "http://127.0.0.1:1234") -> dict:
+def generate_trade_signal_multi_provider(analysis_json_string: str, ai_provider: str, lmstudio_url: str = "http://127.0.0.1:1234", feedback: str = None) -> dict:
     """Generate trade signal using the specified AI provider."""
     
     if analysis_json_string.startswith('{"error"'):
@@ -1710,6 +1715,9 @@ def generate_trade_signal_multi_provider(analysis_json_string: str, ai_provider:
             user_prompt = f"${current_price}, RSI:{rsi_14}, 1H:{price_change_1h}% → JSON: action, entry_price, stop_loss, take_profit, conviction_score, reasoning"
         except:
             user_prompt = f"Analyze: ${data.get('current_price', 0)}, RSI:{data.get('RSI_14', 50)}, 1H:{data.get('price_change_1h_pct', 0)}%"
+            
+        if feedback:
+             user_prompt += f" | REJECTED: {feedback}. IMPROVE."
     else:
         # Full prompt for Gemini and other providers
         system_prompt = (
@@ -1735,6 +1743,9 @@ def generate_trade_signal_multi_provider(analysis_json_string: str, ai_provider:
             "Your output MUST be a single JSON object with keys: 'action' (BUY/SELL/HOLD), 'entry_price', 'stop_loss', 'take_profit', 'conviction_score' (1-100), 'strategy_type' (trend_following/mean_reversion/smc_classic), and 'reasoning'."
         )
         user_prompt = f"Analyze the following data and provide a trade signal: {analysis_json_string}"
+        
+        if feedback:
+            user_prompt += f"\n\nIMPORTANT FEEDBACK FROM RISK MANAGER:\n{feedback}\n\nThe previous signal was REJECTED by the Risk Manager. Please refine your analysis and find a better setup or adjust parameters to address the critique. If no good setup exists, output HOLD."
 
     try:
         # Parse the analysis data to extract market state and session info
@@ -2114,8 +2125,11 @@ def main():
     parser.add_argument('--token', type=str, default='SOL', help='Token symbol (e.g., SOL, BTC, ETH)')
     parser.add_argument('--chain', type=str, default='solana', help='Blockchain network (e.g., solana, ethereum, bsc)')
     parser.add_argument('--mode', type=str, default='signal', choices=['signal', 'analysis'], help='Output mode: signal for trade signal, analysis for comprehensive market analysis')
-    parser.add_argument('--ai-provider', type=str, default='auto', choices=['auto', 'gemini', 'lmstudio'], help='AI provider: auto (auto-detect), gemini (Google Gemini API), lmstudio (Local LM Studio)')
+    parser.add_argument('--ai-provider', type=str, default='auto', choices=['auto', 'gemini', 'lmstudio'], help='AI provider to use (default: auto)')
     parser.add_argument('--lmstudio-url', type=str, default='http://127.0.0.1:1234', help='Custom LM Studio server URL (e.g., http://192.168.100.182:1234)')
+    parser.add_argument('--loop', action='store_true', help='Run the agent in a continuous loop')
+    parser.add_argument('--interval', type=int, default=300, help='Loop interval in seconds (default: 300s / 5m)')
+    parser.add_argument('--leverage', action='store_true', help='Enable leverage trading via Drift Protocol')
     
     args = parser.parse_args()
     
@@ -2133,156 +2147,393 @@ def main():
     if selected_provider == 'fallback':
         print("⚠️  No AI providers available. Using fallback technical analysis...")
     
-    # Check if we need Gemini API key for Gemini mode
-    if selected_provider == 'gemini' and (not GEMINI_API_KEY or GEMINI_API_KEY == "REPLACE_WITH_YOUR_GEMINI_KEY"):
-        print("❌ CRITICAL ERROR: Gemini API Key is missing. Please set GEMINI_API_KEY.")
-        return
-        
-    # 1. Fetch Data
-    print("...Fetching real-time data...")
-    market_data, ohlcv_data = fetch_birdeye_data(token_address, args.chain)
-    
-    if 'error' in market_data:
-        print(f"❌ Failed to start due to data retrieval error: {market_data['error']}")
-        return
-
-    # 2. Process Data
-    print("...Processing raw data and calculating indicators...")
-    
-    # Update the market data to include the token symbol if it's not present
-    if not market_data.get('symbol'):
-        market_data['symbol'] = args.token
-    
-    analysis_payload = process_data(market_data, ohlcv_data)
-    
-    # 3. Generate Analysis/Signal based on mode
-    if args.mode == 'analysis':
-        print(f"...Sending structured data to {selected_provider.upper()} for comprehensive analysis...")
-        
-        # Update the analysis payload to include the coin symbol properly before calling analysis
-        analysis_payload_dict = json.loads(analysis_payload)
-        analysis_payload_dict["coin_symbol"] = args.token
-        analysis_payload = json.dumps(analysis_payload_dict)
-        
-        # For analysis mode, we'll use Gemini if available, otherwise fallback
-        if selected_provider == 'gemini':
-            result = generate_comprehensive_analysis(analysis_payload)
-        else:
-            result = {
-                "analysis": f"Comprehensive analysis requires AI provider. Using {selected_provider}. Available analysis features: Market structure, Fair Value Gaps, Order Blocks, Volume analysis."
-            }
-        
-        if 'analysis' in result:
-            # Use the new formatter for beautiful output
-            OutputFormatter.format_comprehensive_analysis(result['analysis'], args.token)
-        elif 'error' in result:
-            print(f"\n❌ FAILED ANALYSIS GENERATION: {result['error']}")
-    else: # Default to signal mode
-        print(f"...Sending structured data to {selected_provider.upper()} for high-level analysis...")
-        
-        if selected_provider == 'fallback':
-            # Use simple fallback logic
-            signal = generate_fallback_signal(analysis_payload)
-            provider_name = "FALLBACK"
-        else:
-            # Use the selected AI provider
+    # --- MAIN LOOP START ---
+    while True:
+        try:
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"\n⏰ [{current_time}] Starting cycle...")
             
-            # --- MULTI-AGENT PIPELINE START ---
+            # --- LIFECYCLE MANAGEMENT START ---
+            db = LifecycleDatabase()
             
-            # 1. News Agent
-            print("...News Agent: Fetching recent news...")
-            news_agent = NewsAgent()
-            news_summary = news_agent.fetch_news(args.token)
+            # Initialize Wallet and Jupiter Client
+            wallet = SolanaWallet()
+            jupiter = JupiterClient(wallet)
+            drift = DriftClientWrapper() if args.leverage else None
             
-            # Inject news into analysis payload
-            payload_dict = json.loads(analysis_payload)
-            payload_dict["news_summary"] = news_summary
-            analysis_payload_with_news = json.dumps(payload_dict)
+            active_trade = db.get_active_trade()
             
-            # 2. Strategy Agent (Existing)
-            print(f"...Strategy Agent: Generating signal using {selected_provider.upper()}...")
-            signal = generate_trade_signal_multi_provider(analysis_payload_with_news, selected_provider, args.lmstudio_url)
-            provider_name = selected_provider.upper()
-            
-            # Add news summary to signal for display
-            signal['news_summary'] = news_summary
-            
-            # 3. Risk Manager Agent
-            if 'error' not in signal:
-                print(f"...Risk Manager Agent: Critiquing signal...")
-                risk_manager = RiskManager()
+            if active_trade:
+                print(f"\n🔄 EXISTING TRADE FOUND: {active_trade['symbol']} (ID: {active_trade['id']})")
+                print(f"   Entry: {active_trade['entry_price']} | SL: {active_trade['stop_loss']} | TP: {active_trade['take_profit']}")
+                print("...Switching to MANAGEMENT MODE...")
                 
-                # Define callback for Risk Manager to use the same AI provider
-                def risk_ai_callback(user_prompt, system_prompt):
-                    return call_ai_provider(selected_provider, user_prompt, system_prompt, args.lmstudio_url)
+                # Get the token address for the ACTIVE trade (not the command-line argument)
+                active_trade_token_address = get_token_address_from_symbol(active_trade['symbol'], args.chain)
                 
-                risk_assessment = risk_manager.assess_risk(signal, market_data, news_summary, risk_ai_callback)
-                
-                # Merge Risk Assessment into Signal
-                signal['risk_assessment'] = risk_assessment
-                
-                # Apply Risk Manager's verdict
-                if not risk_assessment.get('approved', True):
-                    print("⚠️  Risk Manager REJECTED the trade.")
-                    signal['action'] = "HOLD (Risk Manager Rejection)"
-                    signal['reasoning'] = f"[RISK REJECTED] {risk_assessment.get('critique')} | Original: {signal.get('reasoning')}"
-                    if 'modified_conviction' in risk_assessment:
-                        signal['conviction_score'] = risk_assessment['modified_conviction']
+                if not active_trade_token_address:
+                    print(f"⚠️  Could not find token address for {active_trade['symbol']}. Skipping management.")
                 else:
-                    print("✅ Risk Manager APPROVED the trade.")
+                    # Fetch current price for the ACTIVE trade's token
+                    market_data, _ = fetch_birdeye_data(active_trade_token_address, args.chain)
+                    if 'value' in market_data:
+                        current_price = float(market_data['value'])
+                        print(f"   Current Price: {current_price}")
+                        
+                        # Check for exit conditions
+                        if current_price <= active_trade['stop_loss']:
+                            print("🛑 STOP LOSS HIT! Closing trade...")
+                            
+                            # Execute sell via Jupiter (if wallet is configured)
+                            if wallet.keypair and active_trade_token_address:
+                                print("🔄 Executing SELL on Jupiter...")
+                                # For selling, we need to swap the token back to SOL
+                                # We'll sell a fixed amount or percentage - for now, let's use the same 0.01 SOL worth
+                                # In a real scenario, you'd track how much of the token you bought
+                                
+                                # Estimate: if we bought with 0.01 SOL, we should have approximately that much in tokens
+                                # For simplicity, let's just try to sell back to SOL
+                                # This is a simplified approach - in production, you'd track exact token amounts
+                                
+                                input_mint = active_trade_token_address  # The token we're selling
+                                output_mint = "So11111111111111111111111111111111111111112"  # SOL
+                                # Use a small amount for testing - this should be calculated based on actual holdings
+                                amount_to_sell = 10000000  # Placeholder - should be actual token balance
+                                
+                                sell_result = jupiter.execute_swap(input_mint, output_mint, amount_to_sell)
+                                
+                                if "signature" in sell_result:
+                                    print(f"✅ SELL Executed! Signature: {sell_result['signature']}")
+                                else:
+                                    print(f"⚠️  SELL Failed: {sell_result.get('error')} - Trade marked as closed anyway")
+                            
+                            db.close_trade(active_trade['id'], current_price, "Stop Loss Hit")
+                            
+                        elif current_price >= active_trade['take_profit']:
+                            print("💰 TAKE PROFIT HIT! Closing trade...")
+                            
+                            # Execute sell via Jupiter (if wallet is configured)
+                            if wallet.keypair and active_trade_token_address:
+                                print("🔄 Executing SELL on Jupiter...")
+                                
+                                input_mint = active_trade_token_address  # The token we're selling
+                                output_mint = "So11111111111111111111111111111111111111112"  # SOL
+                                amount_to_sell = 10000000  # Placeholder - should be actual token balance
+                                
+                                sell_result = jupiter.execute_swap(input_mint, output_mint, amount_to_sell)
+                                
+                                if "signature" in sell_result:
+                                    print(f"✅ SELL Executed! Signature: {sell_result['signature']}")
+                                else:
+                                    print(f"⚠️  SELL Failed: {sell_result.get('error')} - Trade marked as closed anyway")
+                            
+                            db.close_trade(active_trade['id'], current_price, "Take Profit Hit")
+                            
+                        else:
+                            print("✋ Holding... Trade is still active.")
+                    else:
+                        print("⚠️  Could not fetch current price to manage trade.")
+                
+                # In Management Mode, we can check more frequently (e.g., every 60s)
+                if args.loop:
+                    print(f"💤 Sleeping for 60s (Management Mode)...")
+                    time.sleep(60)
+                    continue
+                else:
+                    return 
             
-            # --- MULTI-AGENT PIPELINE END ---
+            # --- LIFECYCLE MANAGEMENT END ---
+                
+            # 1. Fetch Data
+            print("...Fetching real-time data...")
+            market_data, ohlcv_data = fetch_birdeye_data(token_address, args.chain)
+            
+            if 'error' in market_data:
+                print(f"❌ Failed to start due to data retrieval error: {market_data['error']}")
+                if args.loop:
+                    time.sleep(60) # Retry sooner on error
+                    continue
+                else:
+                    return
+
+            # 2. Process Data
+            print("...Processing raw data and calculating indicators...")
+            
+            # Update the market data to include the token symbol if it's not present
+            if not market_data.get('symbol'):
+                market_data['symbol'] = args.token
+            
+            analysis_payload = process_data(market_data, ohlcv_data)
+            
+            # 3. Generate Analysis/Signal based on mode
+            if args.mode == 'analysis':
+                print(f"...Sending structured data to {selected_provider.upper()} for comprehensive analysis...")
+                
+                # Update the analysis payload to include the coin symbol properly before calling analysis
+                analysis_payload_dict = json.loads(analysis_payload)
+                analysis_payload_dict["coin_symbol"] = args.token
+                analysis_payload = json.dumps(analysis_payload_dict)
+                
+                # For analysis mode, we'll use Gemini if available, otherwise fallback
+                if selected_provider == 'gemini':
+                    result = generate_comprehensive_analysis(analysis_payload)
+                else:
+                    result = {
+                        "analysis": f"Comprehensive analysis requires AI provider. Using {selected_provider}. Available analysis features: Market structure, Fair Value Gaps, Order Blocks, Volume analysis."
+                    }
+                
+                if 'analysis' in result:
+                    # Use the new formatter for beautiful output
+                    OutputFormatter.format_comprehensive_analysis(result['analysis'], args.token)
+                elif 'error' in result:
+                    print(f"\n❌ FAILED ANALYSIS GENERATION: {result['error']}")
+            else: # Default to signal mode
+                print(f"...Sending structured data to {selected_provider.upper()} for high-level analysis...")
+                
+                if selected_provider == 'fallback':
+                    # Use simple fallback logic
+                    signal = generate_fallback_signal(analysis_payload)
+                    provider_name = "FALLBACK"
+                else:
+                    # Use the selected AI provider
+                    
+                    # --- MULTI-AGENT PIPELINE START ---
+                    
+                    # 1. News Agent
+                    print("...News Agent: Fetching recent news...")
+                    news_agent = NewsAgent()
+                    news_summary = news_agent.fetch_news(args.token)
+                    
+                    # Inject news into analysis payload
+                    payload_dict = json.loads(analysis_payload)
+                    payload_dict["news_summary"] = news_summary
+                    analysis_payload_with_news = json.dumps(payload_dict)
+                    
+                    # 2. Strategy Agent (Existing)
+                    print(f"...Strategy Agent: Generating signal using {selected_provider.upper()}...")
+                    signal = generate_trade_signal_multi_provider(analysis_payload_with_news, selected_provider, args.lmstudio_url)
+                    provider_name = selected_provider.upper()
+                    
+                    # Add news summary to signal for display
+                    signal['news_summary'] = news_summary
+                    
+                    # 3. Risk Manager Agent (Debate Loop)
+                    if 'error' not in signal:
+                        print(f"...Risk Manager Agent: Critiquing signal...")
+                        risk_manager = RiskManager()
+                        
+                        # Define callback for Risk Manager to use the same AI provider
+                        def risk_ai_callback(user_prompt, system_prompt):
+                            return call_ai_provider(selected_provider, user_prompt, system_prompt, args.lmstudio_url)
+                        
+                        # Debate Loop Variables
+                        max_retries = 3
+                        retry_count = 0
+                        risk_approved = False
+                        
+                        while retry_count < max_retries:
+                            risk_assessment = risk_manager.assess_risk(signal, market_data, news_summary, risk_ai_callback)
+                            
+                            # Merge Risk Assessment into Signal
+                            signal['risk_assessment'] = risk_assessment
+                            
+                            if risk_assessment.get('approved', True):
+                                print("✅ Risk Manager APPROVED the trade.")
+                                risk_approved = True
+                                break
+                            else:
+                                print(f"⚠️  Risk Manager REJECTED the trade (Attempt {retry_count + 1}/{max_retries}).")
+                                print(f"   Critique: {risk_assessment.get('critique')}")
+                                
+                                if retry_count < max_retries - 1:
+                                    print("🔄 Feedback Loop: Requesting refined signal from Strategy Agent...")
+                                    feedback = risk_assessment.get('critique')
+                                    # Re-generate signal with feedback
+                                    signal = generate_trade_signal_multi_provider(analysis_payload_with_news, selected_provider, args.lmstudio_url, feedback=feedback)
+                                    signal['news_summary'] = news_summary # Re-attach news
+                                
+                                retry_count += 1
+                        
+                        if not risk_approved:
+                            print("❌ Trade REJECTED after debate loop.")
+                            signal['action'] = "HOLD (Risk Manager Rejection)"
+                            signal['reasoning'] = f"[RISK REJECTED] {signal.get('risk_assessment', {}).get('critique')} | Original: {signal.get('reasoning')}"
+                            
+                            # Log rejected signal
+                            db.save_signal(
+                                symbol=args.token,
+                                signal_data=signal,
+                                risk_assessment=signal.get('risk_assessment'),
+                                status="REJECTED"
+                            )
+                        else:
+                            # Trade Approved - Save to DB
+                            if signal.get('action') == 'BUY':
+                                print("💾 Saving trade to Lifecycle Database...")
+                                
+                                # Execute Swap via Jupiter
+                                swap_status = "PENDING"
+                                swap_result = None
+                                
+                                if wallet.keypair:
+                                    if args.leverage and drift:
+                                        print("🚀 Executing LEVERAGE LONG on Drift...")
+                                        # TODO: Make amount configurable
+                                        amount_sol = 0.01 
+                                        swap_result = drift.open_position(args.token, "LONG", amount_sol)
+                                        
+                                        if "signature" in swap_result:
+                                            print(f"✅ Drift Long Position Opened! Signature: {swap_result['signature']}")
+                                            swap_status = "EXECUTED"
+                                        else:
+                                            print(f"❌ Drift Order Failed: {swap_result.get('error')}")
+                                            swap_status = "FAILED"
+                                            signal['swap_error'] = swap_result.get('error')
+                                            
+                                    else:
+                                        print("🚀 Executing LIVE SWAP on Jupiter...")
+                                        # Amount to swap: For now, let's use a fixed amount or percentage
+                                        # TODO: Make this configurable. Defaulting to 0.01 SOL for safety.
+                                        amount_sol = 0.01 
+                                        amount_lamports = int(amount_sol * 1e9)
+                                        
+                                        # Get Quote first (optional but good for logging)
+                                        # ... (existing Jupiter logic)
+                                        
+                                        # Execute Swap
+                                        # For SOL -> Token, input is SOL mint
+                                        input_mint = "So11111111111111111111111111111111111111112" 
+                                        output_mint = get_token_address_from_symbol(args.token, args.chain)
+                                        
+                                        if output_mint:
+                                            swap_result = jupiter.execute_swap(input_mint, output_mint, amount_lamports)
+                                            
+                                            if "signature" in swap_result:
+                                                print(f"✅ Swap Executed! Signature: {swap_result['signature']}")
+                                                swap_status = "EXECUTED"
+                                                # Update signal with swap details
+                                                signal['swap_signature'] = swap_result['signature']
+                                            else:
+                                                print(f"❌ Swap Failed: {swap_result.get('error')}")
+                                                swap_status = "FAILED"
+                                                signal['swap_error'] = swap_result.get('error')
+                                        else:
+                                            print(f"❌ Could not find mint address for {args.token}")
+                                            swap_status = "FAILED"
+                                            signal['swap_error'] = "Token mint not found"
+                                else:
+                                    print("⚠️  No wallet configured. Simulation mode only.")
+                                    swap_status = "SIMULATED"
+
+                                db.add_trade(
+                                    symbol=args.token,
+                                    entry_price=signal.get('entry_price'),
+                                    stop_loss=signal.get('stop_loss'),
+                                    take_profit=signal.get('take_profit'),
+                                    strategy_output=signal,
+                                    risk_assessment=signal.get('risk_assessment')
+                                )
+                                
+                                # Log executed signal
+                                db.save_signal(
+                                    symbol=args.token,
+                                    signal_data=signal,
+                                    risk_assessment=signal.get('risk_assessment'),
+                                    status=swap_status
+                                )
+                            elif signal.get('action') == 'SELL':
+                                if args.leverage and drift and wallet.keypair:
+                                    print("🚀 Executing LEVERAGE SHORT on Drift...")
+                                    amount_sol = 0.01 
+                                    swap_result = drift.open_position(args.token, "SHORT", amount_sol)
+                                    
+                                    if "signature" in swap_result:
+                                        print(f"✅ Drift Short Position Opened! Signature: {swap_result['signature']}")
+                                        swap_status = "EXECUTED"
+                                    else:
+                                        print(f"❌ Drift Order Failed: {swap_result.get('error')}")
+                                        swap_status = "FAILED"
+                                        signal['swap_error'] = swap_result.get('error')
+                                    
+                                    # Log executed signal
+                                    db.save_signal(
+                                        symbol=args.token,
+                                        signal_data=signal,
+                                        risk_assessment=signal.get('risk_assessment'),
+                                        status=swap_status
+                                    )
+                                else:
+                                    # Approved but not a BUY (e.g. SELL or HOLD approved?) - unlikely for opening but good to cover
+                                    db.save_signal(
+                                        symbol=args.token,
+                                        signal_data=signal,
+                                        risk_assessment=signal.get('risk_assessment'),
+                                        status="SKIPPED"
+                                    )
+                    
+                    # --- MULTI-AGENT PIPELINE END ---
+                
+                # 4. Output/Alert the Result
+                if 'error' in signal:
+                    print(f"\n❌ FAILED SIGNAL GENERATION: {signal['error']}")
+                else:
+                    coin_symbol = market_data.get('symbol', args.token)
+                    
+                    # Update the analysis payload to include the coin symbol properly
+                    analysis_payload_dict = json.loads(analysis_payload)
+                    analysis_payload_dict["coin_symbol"] = coin_symbol
+                    
+                    # Detect high-probability setups
+                    high_probability_setups = detect_high_probability_setups(analysis_payload_dict)
+                    
+                    analysis_payload = json.dumps(analysis_payload_dict)
+                    
+                    # Use the new formatter for beautiful output
+                    OutputFormatter.format_trade_signal(signal, market_data, coin_symbol)
+                    
+                    # Display high-probability setups if any detected
+                    if high_probability_setups:
+                        print(f"\n🎯 HIGH-PROBABILITY SETUPS DETECTED ({len(high_probability_setups)})")
+                        print("=" * 80)
+                        for i, setup in enumerate(high_probability_setups, 1):
+                            probability_icon = "🔥" if setup.get("probability", 0) >= 80 else "⭐" if setup.get("probability", 0) >= 60 else "⚡"
+                            direction_icon = "📈" if setup.get("direction") in ["bullish", "long"] else "📉" if setup.get("direction") in ["bearish", "short"] else "⚖️"
+                            
+                            print(f"\n{i}. {probability_icon} {setup.get('setup_type', 'Unknown')} - {setup.get('confidence_level', 'MEDIUM')} PROBABILITY")
+                            print(f"   {direction_icon} Direction: {setup.get('direction', 'N/A').title()}")
+                            print(f"   📊 Probability: {setup.get('probability', 0)}%")
+                            print(f"   🎯 Entry: {setup.get('entry_criteria', 'N/A')}")
+                            print(f"   🏆 Target: {setup.get('target', 'N/A')}")
+                            print(f"   ⚙️ Session: {setup.get('session_optimization', 'N/A')}")
+                            print(f"   🛡️ Risk Mgmt: {setup.get('risk_management', 'N/A')}")
+                            
+                            confluence_factors = setup.get('confluence_factors', [])
+                            if confluence_factors:
+                                print(f"   ✅ Confluence Factors:")
+                                for factor in confluence_factors:
+                                    print(f"      • {factor}")
+                        print("\n" + "=" * 80)
+                    
+                    # Add Fabio Valentino analysis if available
+                    fabio_data = analysis_payload_dict.get('fabio_valentino_analysis', {})
+                    current_session = analysis_payload_dict.get('current_trading_session', 'Unknown')
+                    if fabio_data:
+                        # Pass the complete analysis data including candlestick patterns
+                        OutputFormatter.format_fabio_valentino_analysis(fabio_data, current_session, analysis_payload_dict)
+                    
+                    # NOTE: For a production system, you would replace this print block
+                    # with an alert mechanism (e.g., email, Telegram, or an exchange API call).
         
-        # 4. Output/Alert the Result
-        if 'error' in signal:
-            print(f"\n❌ FAILED SIGNAL GENERATION: {signal['error']}")
-        else:
-            coin_symbol = market_data.get('symbol', args.token)
+        except Exception as e:
+            print(f"❌ An error occurred in the main loop: {e}")
+            import traceback
+            traceback.print_exc()
             
-            # Update the analysis payload to include the coin symbol properly
-            analysis_payload_dict = json.loads(analysis_payload)
-            analysis_payload_dict["coin_symbol"] = coin_symbol
+        if not args.loop:
+            break
             
-            # Detect high-probability setups
-            high_probability_setups = detect_high_probability_setups(analysis_payload_dict)
-            
-            analysis_payload = json.dumps(analysis_payload_dict)
-            
-            # Use the new formatter for beautiful output
-            OutputFormatter.format_trade_signal(signal, market_data, coin_symbol)
-            
-            # Display high-probability setups if any detected
-            if high_probability_setups:
-                print(f"\n🎯 HIGH-PROBABILITY SETUPS DETECTED ({len(high_probability_setups)})")
-                print("=" * 80)
-                for i, setup in enumerate(high_probability_setups, 1):
-                    probability_icon = "🔥" if setup.get("probability", 0) >= 80 else "⭐" if setup.get("probability", 0) >= 60 else "⚡"
-                    direction_icon = "📈" if setup.get("direction") in ["bullish", "long"] else "📉" if setup.get("direction") in ["bearish", "short"] else "⚖️"
-                    
-                    print(f"\n{i}. {probability_icon} {setup.get('setup_type', 'Unknown')} - {setup.get('confidence_level', 'MEDIUM')} PROBABILITY")
-                    print(f"   {direction_icon} Direction: {setup.get('direction', 'N/A').title()}")
-                    print(f"   📊 Probability: {setup.get('probability', 0)}%")
-                    print(f"   🎯 Entry: {setup.get('entry_criteria', 'N/A')}")
-                    print(f"   🏆 Target: {setup.get('target', 'N/A')}")
-                    print(f"   ⚙️ Session: {setup.get('session_optimization', 'N/A')}")
-                    print(f"   🛡️ Risk Mgmt: {setup.get('risk_management', 'N/A')}")
-                    
-                    confluence_factors = setup.get('confluence_factors', [])
-                    if confluence_factors:
-                        print(f"   ✅ Confluence Factors:")
-                        for factor in confluence_factors:
-                            print(f"      • {factor}")
-                print("\n" + "=" * 80)
-            
-            # Add Fabio Valentino analysis if available
-            fabio_data = analysis_payload_dict.get('fabio_valentino_analysis', {})
-            current_session = analysis_payload_dict.get('current_trading_session', 'Unknown')
-            if fabio_data:
-                # Pass the complete analysis data including candlestick patterns
-                OutputFormatter.format_fabio_valentino_analysis(fabio_data, current_session, analysis_payload_dict)
-            
-            # NOTE: For a production system, you would replace this print block
-            # with an alert mechanism (e.g., email, Telegram, or an exchange API call).
+        print(f"\n💤 Sleeping for {args.interval}s...")
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":
