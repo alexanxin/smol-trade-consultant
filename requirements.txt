@@ -10,3 +10,7 @@ solders
 base58
 driftpy
 anchorpy
+langgraph
+autogen-agentchat
+qdrant-client
+pydantic

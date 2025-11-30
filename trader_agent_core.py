@@ -18,8 +18,10 @@ class TraderAgent:
         self.birdeye_api_key = os.getenv("BIRDEYE_API_KEY")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.coingecko_api_key = os.getenv("COINGECKO_API_KEY")
+        self.coinmarketcap_api_key = os.getenv("COINMARKETCAP_API_KEY")
         self.headers_birdeye = {"X-API-KEY": self.birdeye_api_key}
         self.headers_coingecko = {"x-cg-demo-api-key": self.coingecko_api_key}
+        self.headers_coinmarketcap = {"X-CMC_PRO_API_KEY": self.coinmarketcap_api_key}
 
     async def fetch_data(self, token_symbol: str, chain: str = "solana"):
         """
@@ -32,25 +34,32 @@ class TraderAgent:
         async with aiohttp.ClientSession() as session:
             # Fetch Market Data (Birdeye)
             market_data_task = self._fetch_birdeye_market_data(session, token_address, chain)
-            
-            # Fetch OHLCV Data (CoinGecko) - Requires pool address first
-            pool_address_task = self._get_top_pool_coingecko(session, token_address, chain)
-            
-            market_data, pool_address = await asyncio.gather(market_data_task, pool_address_task)
-            
+
+            # Try CoinGecko first for pool/OHLCV data
+            pool_address = await self._get_top_pool_coingecko(session, token_address, chain)
+
+            # If CoinGecko fails and we have CoinMarketCap key, try fallback
+            if not pool_address and self.coinmarketcap_api_key:
+                print("CoinGecko pool lookup failed, trying CoinMarketCap fallback...")
+                pool_address = await self._get_top_pool_coinmarketcap(session, token_address, chain)
+
+            market_data = await market_data_task
+
             if not pool_address:
+                print("No pool data available from any provider")
                 return market_data, {"ltf": [], "htf": [], "daily": []}
 
             # Fetch OHLCV for multiple timeframes concurrently
+            # Note: OHLCV fallback is handled within _fetch_ohlcv_coingecko
             ohlcv_tasks = {
                 "ltf": self._fetch_ohlcv_coingecko(session, pool_address, chain, "minute", 5, 100),
                 "htf": self._fetch_ohlcv_coingecko(session, pool_address, chain, "hour", 1, 50),
                 "daily": self._fetch_ohlcv_coingecko(session, pool_address, chain, "day", 1, 30)
             }
-            
+
             ohlcv_results = await asyncio.gather(*ohlcv_tasks.values())
             ohlcv_data = dict(zip(ohlcv_tasks.keys(), ohlcv_results))
-            
+
             return market_data, ohlcv_data
 
     async def _get_token_address(self, symbol: str, chain: str):
@@ -146,7 +155,35 @@ class TraderAgent:
                             })
                     return formatted_data
         except Exception as e:
-            print(f"Error fetching OHLCV: {e}")
+            print(f"Error fetching OHLCV from CoinGecko: {e}")
+            # Try CoinMarketCap as fallback
+            if self.coinmarketcap_api_key:
+                print("Falling back to CoinMarketCap for OHLCV data...")
+                return await self._fetch_ohlcv_coinmarketcap(session, token_address, network, timeframe, aggregate, limit)
+        return []
+
+    async def _get_top_pool_coinmarketcap(self, session, token_address, network):
+        """
+        Fallback method using CoinMarketCap API to get pool data.
+        Note: CMC doesn't have the same pool-level data as CoinGecko, so this is limited.
+        """
+        # CoinMarketCap doesn't have detailed pool data like CoinGecko
+        # We'll try to get basic OHLCV data directly if possible
+        print("CoinMarketCap fallback: Pool data not available, trying direct OHLCV...")
+        return None
+
+    async def _fetch_ohlcv_coinmarketcap(self, session, token_address, network, timeframe, aggregate, limit):
+        """
+        Fallback method using CoinMarketCap API for OHLCV data.
+
+        IMPORTANT: CoinMarketCap's free/basic plan does NOT include historical OHLCV data.
+        They only provide current price data, not historical candlestick data needed for technical analysis.
+
+        This method will return empty data to indicate CMC cannot provide OHLCV data.
+        """
+        print("⚠️ CoinMarketCap OHLCV: Free plan does not support historical OHLCV data")
+        print("   Only current price data is available, not suitable for technical analysis")
+        print("   Consider upgrading to CoinMarketCap Pro plan for historical data")
         return []
 
     def analyze_market(self, market_data: Dict, ohlcv_data: Dict) -> Dict:

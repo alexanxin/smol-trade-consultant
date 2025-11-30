@@ -51,6 +51,42 @@ class SolanaWallet:
             print(f"   This won't prevent trading, continuing...")
             return 0.0
 
+    def get_token_balance(self, mint_address: str) -> int:
+        """
+        Get the balance of a specific SPL token in raw atomic units (integer).
+        """
+        if not self.keypair:
+            return 0
+            
+        try:
+            from solders.pubkey import Pubkey
+            from solana.rpc.types import TokenAccountOpts
+            
+            mint_pubkey = Pubkey.from_string(mint_address)
+            opts = TokenAccountOpts(mint=mint_pubkey)
+            
+            response = self.client.get_token_accounts_by_owner(
+                self.keypair.pubkey(), 
+                opts
+            )
+            
+            total_amount = 0
+            
+            if hasattr(response, 'value') and response.value:
+                for account in response.value:
+                    account_pubkey = account.pubkey
+                    balance_resp = self.client.get_token_account_balance(account_pubkey)
+                    
+                    if hasattr(balance_resp, 'value'):
+                        # amount is a string in the response representing the raw integer value
+                        total_amount += int(balance_resp.value.amount)
+                        
+            return total_amount
+            
+        except Exception as e:
+            print(f"⚠️  Warning: Could not fetch token balance for {mint_address}: {e}")
+            return 0
+
     def sign_and_send_transaction(self, transaction_bytes):
         """
         Signs and sends a versioned transaction (required for Jupiter).

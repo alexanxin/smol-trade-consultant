@@ -2188,24 +2188,24 @@ def main():
                             if wallet.keypair and active_trade_token_address:
                                 print("🔄 Executing SELL on Jupiter...")
                                 # For selling, we need to swap the token back to SOL
-                                # We'll sell a fixed amount or percentage - for now, let's use the same 0.01 SOL worth
-                                # In a real scenario, you'd track how much of the token you bought
-                                
-                                # Estimate: if we bought with 0.01 SOL, we should have approximately that much in tokens
-                                # For simplicity, let's just try to sell back to SOL
-                                # This is a simplified approach - in production, you'd track exact token amounts
+                                # We sell 100% of the wallet balance as requested
                                 
                                 input_mint = active_trade_token_address  # The token we're selling
                                 output_mint = "So11111111111111111111111111111111111111112"  # SOL
-                                # Use a small amount for testing - this should be calculated based on actual holdings
-                                amount_to_sell = 10000000  # Placeholder - should be actual token balance
                                 
-                                sell_result = jupiter.execute_swap(input_mint, output_mint, amount_to_sell)
+                                # Get actual token balance
+                                amount_to_sell = wallet.get_token_balance(input_mint)
                                 
-                                if "signature" in sell_result:
-                                    print(f"✅ SELL Executed! Signature: {sell_result['signature']}")
+                                if amount_to_sell > 0:
+                                    print(f"   Selling 100% of holdings: {amount_to_sell} raw units")
+                                    sell_result = jupiter.execute_swap(input_mint, output_mint, amount_to_sell)
+                                    
+                                    if "signature" in sell_result:
+                                        print(f"✅ SELL Executed! Signature: {sell_result['signature']}")
+                                    else:
+                                        print(f"⚠️  SELL Failed: {sell_result.get('error')} - Trade marked as closed anyway")
                                 else:
-                                    print(f"⚠️  SELL Failed: {sell_result.get('error')} - Trade marked as closed anyway")
+                                    print(f"⚠️  No token balance found for {active_trade['symbol']}. Marking closed without swap.")
                             
                             db.close_trade(active_trade['id'], current_price, "Stop Loss Hit")
                             
@@ -2218,14 +2218,20 @@ def main():
                                 
                                 input_mint = active_trade_token_address  # The token we're selling
                                 output_mint = "So11111111111111111111111111111111111111112"  # SOL
-                                amount_to_sell = 10000000  # Placeholder - should be actual token balance
                                 
-                                sell_result = jupiter.execute_swap(input_mint, output_mint, amount_to_sell)
+                                # Get actual token balance
+                                amount_to_sell = wallet.get_token_balance(input_mint)
                                 
-                                if "signature" in sell_result:
-                                    print(f"✅ SELL Executed! Signature: {sell_result['signature']}")
+                                if amount_to_sell > 0:
+                                    print(f"   Selling 100% of holdings: {amount_to_sell} raw units")
+                                    sell_result = jupiter.execute_swap(input_mint, output_mint, amount_to_sell)
+                                    
+                                    if "signature" in sell_result:
+                                        print(f"✅ SELL Executed! Signature: {sell_result['signature']}")
+                                    else:
+                                        print(f"⚠️  SELL Failed: {sell_result.get('error')} - Trade marked as closed anyway")
                                 else:
-                                    print(f"⚠️  SELL Failed: {sell_result.get('error')} - Trade marked as closed anyway")
+                                    print(f"⚠️  No token balance found for {active_trade['symbol']}. Marking closed without swap.")
                             
                             db.close_trade(active_trade['id'], current_price, "Take Profit Hit")
                             
