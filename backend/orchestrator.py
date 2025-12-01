@@ -205,25 +205,8 @@ class Orchestrator:
                     print("========================================\n", flush=True)
                     return {"current_step": "execution", "skipped": True}
             
-            print(f"[DEBUG] Calling execute_decision...", flush=True)
-            result = await engine.execute_decision(decision, token)
-            
-            print("\n========================================", flush=True)
-            print("       EXECUTION RESULT", flush=True)
-            print("========================================", flush=True)
-            
-            # Check if execution was successful (live or dry-run)
-            execution_success = "signature" in result or (result.get("status") == "simulated" and decision.get('action') == 'BUY')
-            
-            if "signature" in result:
-                print(f"✅ SUCCESS: {result['signature']}", flush=True)
-            elif "error" in result:
-                print(f"❌ ERROR: {result['error']}", flush=True)
-            elif "status" in result:
-                print(f"ℹ️  STATUS: {result['status']}", flush=True)
-            
-            # Record position if this was a successful BUY (live or dry-run)
-            # Check if we should execute BUY
+            # Execute based on action type
+            # BUY: Check portfolio risk first, then execute
             if action == 'BUY':
                 # Initialize Portfolio Manager
                 from .portfolio_manager import PortfolioManager
@@ -242,8 +225,6 @@ class Orchestrator:
                 size_pct = plan.get('position_size_pct', 0.1)
                 
                 # Estimate trade value (Size % of Equity)
-                # Note: ExecutionEngine uses size_pct of *Balance* usually, but PortfolioManager thinks in *Equity*.
-                # Let's approximate trade value = size_pct * cash_balance (since we usually size based on available cash)
                 estimated_trade_value = size_pct * cash_balance
                 
                 # Check Risk
@@ -294,8 +275,44 @@ class Orchestrator:
                 
                 if "signature" in result:
                     print(f"✅ SUCCESS: {result['signature']}", flush=True)
+                    
+                    # Close position in database if this was a SELL
+                    if action == 'SELL':
+                        print(f"[DEBUG] Closing position in database...", flush=True)
+                        open_positions = position_manager.get_all_positions()
+                        
+                        # Close all open positions for this token
+                        for pos in open_positions:
+                            if pos.symbol == token:
+                                # Get exit price from result or use current price
+                                exit_price = result.get('exit_price', pos.current_price or pos.entry_price)
+                                position_manager.close_position(
+                                    pos.trade_id,
+                                    exit_price,
+                                    "MANUAL_SELL"
+                                )
+                                print(f"[PositionManager] Closed position {pos.trade_id} at ${exit_price:.4f}", flush=True)
+                        
                 elif "error" in result:
                     print(f"❌ ERROR: {result['error']}", flush=True)
+                    
+                    # If SELL failed due to insufficient balance, close positions anyway
+                    # (This means the token was already sold previously)
+                    if action == 'SELL' and "Insufficient" in result.get('error', ''):
+                        print(f"[DEBUG] SELL failed due to insufficient balance - closing stale positions...", flush=True)
+                        open_positions = position_manager.get_all_positions()
+                        
+                        for pos in open_positions:
+                            if pos.symbol == token:
+                                # Use current price or entry price as exit
+                                exit_price = pos.current_price or pos.entry_price
+                                position_manager.close_position(
+                                    pos.trade_id,
+                                    exit_price,
+                                    "ALREADY_SOLD"
+                                )
+                                print(f"[PositionManager] Closed stale position {pos.trade_id} (already sold)", flush=True)
+                        
                 elif "status" in result:
                     print(f"ℹ️  STATUS: {result['status']}", flush=True)
 

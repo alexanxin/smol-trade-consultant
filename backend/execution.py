@@ -54,7 +54,7 @@ class ExecutionEngine:
         Execute the Master Trader's decision.
         """
         action = decision.get("action")
-        plan = decision.get("plan", {})
+        plan = decision.get("plan") or {}  # Handle None plan
         kelly_size = plan.get("position_size_pct", 0.10)  # Default 10%
         
         print(f"\n[ExecutionEngine] Processing {action} decision for {token}")
