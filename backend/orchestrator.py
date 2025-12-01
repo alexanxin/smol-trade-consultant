@@ -183,25 +183,122 @@ class Orchestrator:
         if self.execution_mode:
             print(f"[DEBUG] Execution mode enabled: {self.execution_mode}", flush=True)
             from .execution import ExecutionEngine
+            from .position_manager import PositionManager
             
             print(f"[DEBUG] ExecutionEngine imported", flush=True)
             engine = ExecutionEngine(mode=self.execution_mode, dry_run=self.dry_run)
+            position_manager = PositionManager()
             
             # Get token from orchestrator instance
             token = self.token
+            action = decision.get('action')
+            
+            # Check if we should execute SELL
+            if action == 'SELL':
+                open_positions = position_manager.get_all_positions()
+                if not open_positions:
+                    print("\n========================================", flush=True)
+                    print("       EXECUTION SKIPPED", flush=True)
+                    print("========================================", flush=True)
+                    print("⚠️  SELL signal ignored - No open position to sell", flush=True)
+                    print("ℹ️  Waiting for BUY opportunity...", flush=True)
+                    print("========================================\n", flush=True)
+                    return {"current_step": "execution", "skipped": True}
             
             print(f"[DEBUG] Calling execute_decision...", flush=True)
-            result = engine.execute_decision(decision, token)
+            result = await engine.execute_decision(decision, token)
             
             print("\n========================================", flush=True)
             print("       EXECUTION RESULT", flush=True)
             print("========================================", flush=True)
+            
+            # Check if execution was successful (live or dry-run)
+            execution_success = "signature" in result or (result.get("status") == "simulated" and decision.get('action') == 'BUY')
+            
             if "signature" in result:
                 print(f"✅ SUCCESS: {result['signature']}", flush=True)
             elif "error" in result:
                 print(f"❌ ERROR: {result['error']}", flush=True)
             elif "status" in result:
                 print(f"ℹ️  STATUS: {result['status']}", flush=True)
+            
+            # Record position if this was a successful BUY (live or dry-run)
+            # Check if we should execute BUY
+            if action == 'BUY':
+                # Initialize Portfolio Manager
+                from .portfolio_manager import PortfolioManager
+                portfolio_manager = PortfolioManager()
+                
+                # Get current state
+                open_positions = position_manager.get_all_positions()
+                cash_balance = await engine.get_cash_balance()
+                
+                # Update Portfolio Manager
+                portfolio_manager.update_state(cash_balance, open_positions)
+                
+                # Calculate estimated trade value
+                plan = decision.get('plan', {})
+                entry_price = plan.get('entry', 0)
+                size_pct = plan.get('position_size_pct', 0.1)
+                
+                # Estimate trade value (Size % of Equity)
+                # Note: ExecutionEngine uses size_pct of *Balance* usually, but PortfolioManager thinks in *Equity*.
+                # Let's approximate trade value = size_pct * cash_balance (since we usually size based on available cash)
+                estimated_trade_value = size_pct * cash_balance
+                
+                # Check Risk
+                if not portfolio_manager.check_trade_risk(estimated_trade_value):
+                    print("\n========================================", flush=True)
+                    print("       RISK CHECK FAILED", flush=True)
+                    print("========================================", flush=True)
+                    print(f"⚠️  Trade rejected by Portfolio Manager (Risk Limit Exceeded)", flush=True)
+                    print("========================================\n", flush=True)
+                    return {"current_step": "execution", "skipped": True, "reason": "risk_limit"}
+                
+                print("[Orchestrator] Portfolio Risk Check: PASSED", flush=True)
+
+                # Proceed with execution
+                print(f"[DEBUG] Calling execute_decision...", flush=True)
+                result = await engine.execute_decision(decision, token)
+                
+                print("\n========================================", flush=True)
+                print("       EXECUTION RESULT", flush=True)
+                print("========================================", flush=True)
+                
+                # Check if execution was successful (live or dry-run)
+                execution_success = "signature" in result or (result.get("status") == "simulated" and decision.get('action') == 'BUY')
+                
+                if "signature" in result:
+                    print(f"✅ SUCCESS: {result['signature']}", flush=True)
+                elif "error" in result:
+                    print(f"❌ ERROR: {result['error']}", flush=True)
+                elif "status" in result:
+                    print(f"ℹ️  STATUS: {result['status']}", flush=True)
+                
+                # Record position if this was a successful BUY
+                if execution_success:
+                    print(f"[DEBUG] Recording position in database...", flush=True)
+                    token_address = result.get('token_address', 'SOL_ADDRESS_PLACEHOLDER')
+                    if 'amount' not in result:
+                        result['amount'] = 1.0
+                    position_manager.add_position(decision, result, token, token_address)
+            
+            # Handle SELL/HOLD
+            else:
+                print(f"[DEBUG] Calling execute_decision...", flush=True)
+                result = await engine.execute_decision(decision, token)
+                
+                print("\n========================================", flush=True)
+                print("       EXECUTION RESULT", flush=True)
+                print("========================================", flush=True)
+                
+                if "signature" in result:
+                    print(f"✅ SUCCESS: {result['signature']}", flush=True)
+                elif "error" in result:
+                    print(f"❌ ERROR: {result['error']}", flush=True)
+                elif "status" in result:
+                    print(f"ℹ️  STATUS: {result['status']}", flush=True)
+
             print("========================================\n", flush=True)
         
         return {"current_step": "execution"}
@@ -214,7 +311,20 @@ class Orchestrator:
             current_step="start"
         )
         
+        final_state = None
         # Run the graph
         async for output in self.app.astream(initial_state):
             for key, value in output.items():
                 print(f"Finished step: {key}")
+                # Update final state with the latest output
+                # The output from langgraph is usually a dict with the node name as key and the state update as value
+                # We want to capture the accumulated state
+                if isinstance(value, dict) and 'global_state' in value:
+                    final_state = value['global_state']
+                elif isinstance(value, dict):
+                     # Sometimes it returns just the update, so we might need to merge or just rely on self.state.state
+                     pass
+        
+        # Since self.state.state is updated throughout the process (via StateManager), 
+        # we can just return the latest state from StateManager
+        return self.state.state

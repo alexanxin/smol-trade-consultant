@@ -1,11 +1,11 @@
 import asyncio
 import os
 import base58
-# from driftpy.drift_client import DriftClient  # Commented out for spot trading focus
-# from driftpy.account_subscription_config import AccountSubscriptionConfig  # Commented out for spot trading focus
-# from driftpy.types import MarketType, PositionDirection, OrderType, OrderParams  # Commented out for spot trading focus
-# from driftpy.constants.numeric_constants import BASE_PRECISION, QUOTE_PRECISION  # Commented out for spot trading focus
-# from anchorpy import Provider, Wallet  # Commented out for spot trading focus
+# from driftpy.drift_client import DriftClient
+# from driftpy.account_subscription_config import AccountSubscriptionConfig
+# from driftpy.types import MarketType, PositionDirection, OrderType, OrderParams
+# from driftpy.constants.numeric_constants import BASE_PRECISION, QUOTE_PRECISION
+# from anchorpy import Provider, Wallet
 from solana.rpc.async_api import AsyncClient
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -54,18 +54,16 @@ class DriftClientWrapper:
         }
         return symbol_map.get(symbol.upper())
 
-    def open_position(self, symbol, direction, amount_sol, leverage=1):
+    async def open_position(self, symbol, direction, amount_sol, leverage=1):
         """
         Open a perpetual position.
         direction: 'LONG' or 'SHORT'
-        amount_sol: Size of position in SOL (not collateral, but notional value?)
-                   Or collateral amount?
-                   Drift takes base_asset_amount usually.
+        amount_sol: Size of position in SOL terms (notional)
         """
         # Commented out for spot trading focus
         return {"error": "Drift functionality commented out for spot trading focus"}
 
-    def close_position(self, symbol):
+    async def close_position(self, symbol):
         """
         Close all positions for a symbol.
         """

@@ -216,7 +216,8 @@ class TraderAgent:
                 "order_blocks": self._calculate_order_blocks_vectorized(df),
                 "market_structure": self._calculate_market_structure_vectorized(df),
                 "volume_profile": self._calculate_volume_profile(df),
-                "candlestick_patterns": self._detect_candlestick_patterns(df)
+                "candlestick_patterns": self._detect_candlestick_patterns(df),
+                "fibonacci": self._calculate_fibonacci_levels(df)
             }
             
         # Fabio Valentino Specific Analysis
@@ -237,86 +238,86 @@ class TraderAgent:
 
     def _calculate_fvgs_vectorized(self, df):
         """
-        Vectorized Fair Value Gap calculation.
+        Vectorized Fair Value Gap calculation with mitigation check.
+        Only returns ACTIVE (unfilled) FVGs.
         """
-        df = df.copy()
-        # Shift for comparison
-        df['prev_high'] = df['h'].shift(1)
-        df['prev_low'] = df['l'].shift(1)
-        df['next_high'] = df['h'].shift(-1)
-        df['next_low'] = df['l'].shift(-1)
-        
-        # Bullish FVG: Low > Prev High AND High < Next Low (Gap between prev high and next low)
-        # Wait, standard definition: 
-        # Bullish FVG: Candle 1 High < Candle 3 Low. The gap is between Candle 1 High and Candle 3 Low.
-        # In the original code:
-        # bullish_fvg = df[(df['l'] > df['prev_high']) & (df['h'] < df['next_low'])]
-        # This seems to be checking if the CURRENT candle is the gap.
-        # Let's stick to the standard definition:
-        # FVG is formed by 3 candles.
-        # Bullish: Candle 0 High < Candle 2 Low. Gap is (Candle 0 High, Candle 2 Low).
-        # Bearish: Candle 0 Low > Candle 2 High. Gap is (Candle 2 High, Candle 0 Low).
-        
-        # Let's re-implement strictly based on 3-candle pattern for accuracy
-        # We want to find gaps created by the PREVIOUS candle (Candle 1), validated by Candle 2 (Current)
-        # Actually, we usually detect FVG after Candle 2 closes.
-        
-        # Let's use the logic:
-        # Index i: Current Candle
-        # Index i-1: Gap Candle (Big move)
-        # Index i-2: Pre-Gap Candle
-        
-        # Bullish FVG:
-        # (i-2) High < (i) Low
-        
+        if len(df) < 3:
+            return []
+
         highs = df['h'].values
         lows = df['l'].values
+        closes = df['c'].values
+        opens = df['o'].values
         
-        # Create boolean masks
         # We need to look at i-2, i-1, i
-        # Shift 2 to get i-2 aligned with i
-        prev_2_high = np.roll(highs, 2)
-        prev_2_low = np.roll(lows, 2)
+        # Bullish FVG: (i-2) High < (i) Low
+        # Bearish FVG: (i-2) Low > (i) High
         
-        # Bullish FVG condition: prev_2_high < current_low
-        # And typically we want the middle candle (i-1) to be bullish and large, but the gap itself is the defining feature
-        bullish_mask = (prev_2_high < lows) 
-        bearish_mask = (prev_2_low > highs)
+        fvgs = []
+        min_gap_percent = 0.001  # 0.1% minimum gap size
         
-        # We only care about recent FVGs usually, but let's return the last few valid ones
-        # Filter for valid indices (start from index 2)
-        valid_indices = np.arange(len(df)) >= 2
+        # Iterate through candles starting from index 2
+        for i in range(2, len(df)):
+            # 1. Check for Bullish FVG
+            if highs[i-2] < lows[i]:
+                gap_size = lows[i] - highs[i-2]
+                gap_percent = gap_size / highs[i-2]
+                
+                if gap_percent >= min_gap_percent:
+                    # Check for mitigation in subsequent candles
+                    is_mitigated = False
+                    # Look at all candles AFTER i (i+1 to end)
+                    for j in range(i + 1, len(df)):
+                        # If a future candle's Low goes below the FVG Top (lows[i]), it starts filling
+                        # If it goes below FVG Bottom (highs[i-2]), it's fully filled/invalidated
+                        if lows[j] <= highs[i-2]:
+                            is_mitigated = True
+                            break
+                    
+                    if not is_mitigated:
+                        fvgs.append({
+                            "type": "bullish",
+                            "top": float(lows[i]),
+                            "bottom": float(highs[i-2]),
+                            "index": int(i-1), # Gap is at the middle candle
+                            "size_pct": float(gap_percent * 100)
+                        })
+
+            # 2. Check for Bearish FVG
+            elif lows[i-2] > highs[i]:
+                gap_size = lows[i-2] - highs[i]
+                gap_percent = gap_size / highs[i]
+                
+                if gap_percent >= min_gap_percent:
+                    # Check for mitigation
+                    is_mitigated = False
+                    for j in range(i + 1, len(df)):
+                        # If future candle's High goes above FVG Bottom (highs[i]), it starts filling
+                        # If it goes above FVG Top (lows[i-2]), it's fully filled/invalidated
+                        if highs[j] >= lows[i-2]:
+                            is_mitigated = True
+                            break
+                            
+                    if not is_mitigated:
+                        fvgs.append({
+                            "type": "bearish",
+                            "top": float(lows[i-2]),
+                            "bottom": float(highs[i]),
+                            "index": int(i-1),
+                            "size_pct": float(gap_percent * 100)
+                        })
         
-        bullish_fvgs = []
-        bearish_fvgs = []
-        
-        # Extract data
-        for i in np.where(bullish_mask & valid_indices)[0]:
-            bullish_fvgs.append({
-                "type": "bullish",
-                "top": float(lows[i]),
-                "bottom": float(prev_2_high[i]),
-                "index": int(i-1) # The gap is technically in the middle candle
-            })
-            
-        for i in np.where(bearish_mask & valid_indices)[0]:
-            bearish_fvgs.append({
-                "type": "bearish",
-                "top": float(prev_2_low[i]),
-                "bottom": float(highs[i]),
-                "index": int(i-1)
-            })
-            
-        return bullish_fvgs + bearish_fvgs
+        # Sort by index (most recent last) and take last 5
+        return sorted(fvgs, key=lambda x: x['index'])[-5:]
 
     def _calculate_order_blocks_vectorized(self, df):
         """
-        Vectorized Order Block calculation.
+        Vectorized Order Block calculation with mitigation check and displacement filter.
+        Only returns ACTIVE (untested) Order Blocks.
         """
-        # Simplified OB detection:
-        # Bullish OB: The last bearish candle before a strong bullish move that breaks structure or takes liquidity.
-        # For simplicity/speed: Bearish candle followed by a bullish candle that engulfs or moves strongly away.
-        
+        if len(df) < 5:
+            return []
+            
         opens = df['o'].values
         closes = df['c'].values
         highs = df['h'].values
@@ -326,33 +327,73 @@ class TraderAgent:
         is_bullish = closes > opens
         is_bearish = closes < opens
         
-        # Shift to compare with next candle
-        next_is_bullish = np.roll(is_bullish, -1)
-        next_close = np.roll(closes, -1)
-        next_open = np.roll(opens, -1)
-        
-        # Bullish OB: Current is Bearish, Next is Bullish and Strong (e.g. Next Close > Current High)
-        bullish_ob_mask = is_bearish & next_is_bullish & (next_close > highs)
-        
-        # Bearish OB: Current is Bullish, Next is Bearish and Strong (e.g. Next Close < Current Low)
-        bearish_ob_mask = is_bullish & (~next_is_bullish) & (next_close < lows)
+        # Calculate body and range for displacement check
+        body = np.abs(closes - opens)
+        candle_range = highs - lows
+        avg_body = pd.Series(body).rolling(10).mean().values
         
         obs = []
-        for i in np.where(bullish_ob_mask)[0][:-1]: # Exclude last element due to roll
-            obs.append({
-                "type": "bullish",
-                "price_level": float(highs[i]), # Often the high of the bearish candle is the trigger
-                "index": int(i)
-            })
+        
+        # Iterate to find OBs (skip last candle as it's forming)
+        for i in range(2, len(df) - 2):
+            # Bullish OB: Bearish candle (i) followed by strong Bullish move (i+1)
+            if is_bearish[i] and is_bullish[i+1]:
+                # Displacement Check: Next candle body > Avg body * 1.5
+                if body[i+1] > avg_body[i] * 1.5 and closes[i+1] > highs[i]:
+                    # Mitigation Check
+                    ob_high = highs[i]
+                    ob_low = lows[i]
+                    is_mitigated = False
+                    
+                    # Check future candles for retest
+                    for j in range(i + 2, len(df)):
+                        # If price drops below OB Low, it's invalidated/broken
+                        if closes[j] < ob_low:
+                            is_mitigated = True
+                            break
+                        # If price touches the OB zone (High to Low), it's mitigated (tested)
+                        # For "Fresh" OBs, we might want untested ones. 
+                        # But standard SMC says a retest IS the entry. 
+                        # So we keep it unless it's BROKEN (closed below low).
+                        # Actually, let's mark it as "mitigated" if it touched, but "broken" if closed below.
+                        # For this agent, let's return valid zones that haven't been BROKEN.
+                        pass
+                    
+                    if not is_mitigated:
+                        obs.append({
+                            "type": "bullish",
+                            "top": float(ob_high),
+                            "bottom": float(ob_low),
+                            "index": int(i),
+                            "strength": "strong"
+                        })
+
+            # Bearish OB: Bullish candle (i) followed by strong Bearish move (i+1)
+            elif is_bullish[i] and is_bearish[i+1]:
+                # Displacement Check
+                if body[i+1] > avg_body[i] * 1.5 and closes[i+1] < lows[i]:
+                    # Mitigation Check
+                    ob_high = highs[i]
+                    ob_low = lows[i]
+                    is_mitigated = False
+                    
+                    for j in range(i + 2, len(df)):
+                        # If price closes above OB High, it's broken
+                        if closes[j] > ob_high:
+                            is_mitigated = True
+                            break
+                            
+                    if not is_mitigated:
+                        obs.append({
+                            "type": "bearish",
+                            "top": float(ob_high),
+                            "bottom": float(ob_low),
+                            "index": int(i),
+                            "strength": "strong"
+                        })
             
-        for i in np.where(bearish_ob_mask)[0][:-1]:
-            obs.append({
-                "type": "bearish",
-                "price_level": float(lows[i]),
-                "index": int(i)
-            })
-            
-        return obs
+        # Return last 5 valid OBs
+        return sorted(obs, key=lambda x: x['index'])[-5:]
 
     def _calculate_market_structure_vectorized(self, df, window=5):
         """
@@ -480,8 +521,100 @@ class TraderAgent:
             is_bearish[-1] and ratio[-1] > 0.5 and # Third candle bearish
             closes[-1] < (opens[-3] + closes[-3])/2): # Closes below midpoint of first
             patterns.append({"name": "Evening Star", "index": -1})
+
+        # 5. Morning Star (Last 3 candles)
+        # Bearish (Large), Gap Down (Small), Bullish (Large, closes into first)
+        if (is_bearish[-3] and ratio[-3] > 0.6 and # First candle large bearish
+            ratio[-2] < 0.3 and # Second candle small (star)
+            is_bullish[-1] and ratio[-1] > 0.5 and # Third candle bullish
+            closes[-1] > (opens[-3] + closes[-3])/2): # Closes above midpoint of first
+            patterns.append({"name": "Morning Star", "index": -1})
+
+        # 6. Hammer (Last candle)
+        # Small body, long lower shadow, small/no upper shadow, occurring after downtrend
+        # We need a simple trend check, e.g., Close < Close[5]
+        lower_shadow = np.minimum(opens, closes) - lows
+        upper_shadow = highs - np.maximum(opens, closes)
+        
+        if (ratio[-1] < 0.3 and # Small body
+            lower_shadow[-1] > 2 * body[-1] and # Long lower shadow
+            upper_shadow[-1] < 0.2 * body[-1]): # Small upper shadow
+            patterns.append({"name": "Hammer", "index": -1})
+
+        # 7. Shooting Star (Last candle)
+        # Small body, long upper shadow, small/no lower shadow, occurring after uptrend
+        if (ratio[-1] < 0.3 and # Small body
+            upper_shadow[-1] > 2 * body[-1] and # Long upper shadow
+            lower_shadow[-1] < 0.2 * body[-1]): # Small lower shadow
+            patterns.append({"name": "Shooting Star", "index": -1})
             
         return patterns
+
+    def _calculate_fibonacci_levels(self, df, lookback=100):
+        """
+        Calculates Fibonacci retracement and extension levels based on recent significant swing points.
+        """
+        if len(df) < lookback:
+            return {}
+            
+        # Get recent data
+        recent_df = df.iloc[-lookback:]
+        
+        # Find max high and min low in the lookback period
+        max_high = recent_df['h'].max()
+        min_low = recent_df['l'].min()
+        
+        # Determine trend direction to set anchor points
+        # Simple approach: check if the high or low occurred more recently
+        idxmax = recent_df['h'].idxmax()
+        idxmin = recent_df['l'].idxmin()
+        
+        trend = "bullish" if idxmin < idxmax else "bearish"
+        
+        levels = {}
+        
+        if trend == "bullish":
+            # Low to High
+            diff = max_high - min_low
+            levels = {
+                "trend": "bullish",
+                "swing_low": float(min_low),
+                "swing_high": float(max_high),
+                "retracements": {
+                    "0.236": float(max_high - 0.236 * diff),
+                    "0.382": float(max_high - 0.382 * diff),
+                    "0.5": float(max_high - 0.5 * diff),
+                    "0.618": float(max_high - 0.618 * diff), # Golden Pocket
+                    "0.786": float(max_high - 0.786 * diff)
+                },
+                "extensions": {
+                    "1.272": float(max_high + 0.272 * diff),
+                    "1.618": float(max_high + 0.618 * diff),
+                    "2.618": float(max_high + 1.618 * diff)
+                }
+            }
+        else:
+            # High to Low
+            diff = max_high - min_low
+            levels = {
+                "trend": "bearish",
+                "swing_high": float(max_high),
+                "swing_low": float(min_low),
+                "retracements": {
+                    "0.236": float(min_low + 0.236 * diff),
+                    "0.382": float(min_low + 0.382 * diff),
+                    "0.5": float(min_low + 0.5 * diff),
+                    "0.618": float(min_low + 0.618 * diff), # Golden Pocket
+                    "0.786": float(min_low + 0.786 * diff)
+                },
+                "extensions": {
+                    "1.272": float(min_low - 0.272 * diff),
+                    "1.618": float(min_low - 0.618 * diff),
+                    "2.618": float(min_low - 1.618 * diff)
+                }
+            }
+            
+        return levels
 
     def _perform_fabio_analysis(self, tech_analysis):
         """
@@ -614,7 +747,30 @@ class TraderAgent:
         # Order Blocks
         obs = ltf.get("order_blocks", [])
         if obs:
-            summary.append(f"Order Blocks (LTF): {len(obs)}")
+            summary.append(f"Active Order Blocks (LTF): {len(obs)}")
+            for ob in obs:
+                summary.append(f"- {ob.get('type').upper()} OB at {ob.get('top'):.4f}-{ob.get('bottom'):.4f}")
+            
+        # Candlestick Patterns
+        patterns = ltf.get("candlestick_patterns", [])
+        if patterns:
+            summary.append(f"Candlestick Patterns: {len(patterns)}")
+            for p in patterns:
+                summary.append(f"- {p.get('name')} (Strength: {p.get('strength', 'medium')})")
+
+        # Fibonacci
+        fib = ltf.get("fibonacci", {})
+        if fib:
+            trend = fib.get("trend", "unknown")
+            summary.append(f"Fibonacci Trend: {trend.upper()}")
+            
+            retracements = fib.get("retracements", {})
+            if "0.618" in retracements:
+                summary.append(f"Fib Golden Pocket (0.618): {retracements['0.618']:.4f}")
+                
+            extensions = fib.get("extensions", {})
+            if "1.618" in extensions:
+                summary.append(f"Fib Extension (1.618): {extensions['1.618']:.4f}")
             
         return "\n".join(summary)
 
@@ -636,7 +792,8 @@ class TraderAgent:
             "2. Determine Bias based on Market Structure (Higher Highs/Lows).\n"
             "3. Look for Liquidity Sweeps followed by Displacement (FVGs).\n"
             "4. Validate setups with RSI and Order Blocks.\n"
-            "5. ONLY signal a trade if conviction is HIGH (>70).\n\n"
+            "5. Use Fibonacci Retracements (0.618) for entries and Extensions (1.272, 1.618) for Take Profit targets.\n"
+            "6. ONLY signal a trade if conviction is HIGH (>70).\n\n"
             "Output MUST be a JSON object with keys: action (BUY/SELL/HOLD), entry_price, stop_loss, take_profit, conviction_score, reasoning."
         )
         

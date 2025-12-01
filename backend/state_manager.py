@@ -26,6 +26,11 @@ class GlobalState(BaseModel):
     active_signals: List[Signal] = Field(default_factory=list)
     execution_queue: List[Dict[str, Any]] = Field(default_factory=list)
     
+    # Trading decision fields
+    decision: Optional[Dict[str, Any]] = None
+    token_address: Optional[str] = None
+    analysis: Optional[Dict[str, Any]] = None
+    
     class Config:
         arbitrary_types_allowed = True
 

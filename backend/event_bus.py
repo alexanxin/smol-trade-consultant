@@ -40,7 +40,8 @@ class EventBus:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                print(f"Error processing event {event.type}: {e}")
+                event_type = event.type if 'event' in locals() else 'unknown'
+                print(f"Error processing event {event_type}: {e}")
 
     def stop(self):
         self._running = False
