@@ -107,6 +107,10 @@ class PositionManager:
             self.positions[position.trade_id] = position
         
         print(f"[PositionManager] Loaded {len(self.positions)} open positions")
+
+    def refresh_positions(self):
+        """Force refresh of positions from database."""
+        self.load_positions()
     
     def add_position(self, trade_data: Dict[str, Any], execution_result: Dict[str, Any], 
                     token: str, token_address: str) -> Position:

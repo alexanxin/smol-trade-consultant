@@ -2,6 +2,7 @@ class RiskEngine:
     def __init__(self):
         self.max_allocation = 0.20 # Max 20% of bankroll per trade
         self.base_kelly_fraction = 0.5 # Half-Kelly for safety
+        self.min_allocation = 0.05 # Minimum 5% position size (prevents 0% trades)
 
     def calculate_kelly_size(self, win_rate: float, risk_reward_ratio: float) -> float:
         """
@@ -42,7 +43,12 @@ class RiskEngine:
         # 5. Apply Safety Multipliers
         safe_kelly = raw_kelly * self.base_kelly_fraction
         
-        # 6. Cap at Max Allocation
-        final_size = min(safe_kelly, self.max_allocation)
+        # 6. Cap at Max Allocation and enforce minimum
+        # If Kelly suggests a trade, ensure it's at least min_allocation
+        if safe_kelly > 0:
+            final_size = max(self.min_allocation, min(safe_kelly, self.max_allocation))
+        else:
+            # Kelly says don't trade, but if confidence > 50%, use minimum
+            final_size = self.min_allocation if confidence_score >= 50 else 0.0
         
         return round(final_size, 4)

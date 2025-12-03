@@ -1,5 +1,5 @@
 requests
-google-genai
+google-generativeai
 pandas
 ta
 python-dotenv

@@ -7,6 +7,8 @@ import time
 import sys
 import argparse
 import subprocess
+import asyncio
+import google.generativeai as genai
 from dotenv import load_dotenv
 from output_formatter import OutputFormatter
 from news_agent import NewsAgent
@@ -46,6 +48,10 @@ except ImportError:
 BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+
+# Configure Gemini API
+if GEMINI_API_KEY and GEMINI_API_KEY != "REPLACE_WITH_YOUR_GEMINI_KEY":
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # ----------------------------------------------------------------------
 # 1. DATA RETRIEVAL FUNCTION
@@ -1666,32 +1672,23 @@ def call_ai_provider(provider: str, prompt: str, system_prompt: str = None, lmst
         return call_lm_studio(prompt, system_prompt, lmstudio_url)
     elif provider == 'gemini':
         try:
-            # Combine system and user prompts for the CLI
-            full_prompt = f"{system_prompt}\n\n{prompt}"
+            # Use Google Generative AI SDK (Web API) instead of CLI
+            model = genai.GenerativeModel('gemini-2.5-flash')
             
-            # Get the Google Cloud Project ID from environment variables
-            google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT")
+            # Combine system and user prompts
+            full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
             
-            # Prepare the environment for the subprocess
-            env = os.environ.copy()
-            if google_cloud_project:
-                env['GOOGLE_CLOUD_PROJECT'] = google_cloud_project
+            # Generate content using Web API
+            response = model.generate_content(full_prompt)
             
-            # Execute the gemini CLI command
-            process = subprocess.run(
-                ['gemini', full_prompt],
-                capture_output=True,
-                text=True,
-                check=True,
-                env=env
-            )
-            return process.stdout.strip()
-        except FileNotFoundError:
-            return "Error: 'gemini' command not found. Please ensure the Gemini CLI is installed and in your PATH."
-        except subprocess.CalledProcessError as e:
-            return f"Error: Gemini CLI failed with exit code {e.returncode}. Stderr: {e.stderr}"
+            # Extract text from response
+            if response and response.text:
+                return response.text.strip()
+            else:
+                return "Error: Empty response from Gemini API"
+                
         except Exception as e:
-            return f"Error: An unexpected error occurred when calling Gemini CLI: {e}"
+            return f"Error: Gemini API call failed: {e}"
     else:
         return f"Unknown AI provider: {provider}"
 

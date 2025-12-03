@@ -1,17 +1,19 @@
 import os
 import autogen
+import asyncio
 from typing import Dict, Any, List
 from .prompts import BULL_RESEARCHER_PROMPT, BEAR_RESEARCHER_PROMPT
+from .config import Config
 
 class DebateRoom:
     def __init__(self):
-        self.api_key = os.getenv("GEMINI_API_KEY")
+        self.api_key = Config.GEMINI_API_KEY
         if not self.api_key:
             print("WARNING: GEMINI_API_KEY not found. Debate will fail.")
             
         self.config_list = [
             {
-                "model": "gemini-2.5-flash", # User requested 2.5
+                "model": Config.MODEL_NAME,
                 "api_key": self.api_key,
                 "api_type": "google"
             }
@@ -29,6 +31,18 @@ class DebateRoom:
         """
         print("--- Starting Bull/Bear Debate ---")
         
+        # Run the blocking Autogen chat in a separate thread
+        try:
+            transcript = await asyncio.to_thread(self._run_autogen_chat, context)
+            return transcript
+        except Exception as e:
+            print(f"Error during debate: {e}")
+            return f"Debate failed: {e}"
+
+    def _run_autogen_chat(self, context: str) -> str:
+        """
+        Synchronous function to run Autogen chat.
+        """
         # Initialize Agents
         bull_agent = autogen.AssistantAgent(
             name="Bull_Researcher",
@@ -63,12 +77,7 @@ class DebateRoom:
         """
 
         # Start the chat
-        # Note: AutoGen's initiate_chat is synchronous. We might need to run it in a thread 
-        # if we want to be fully async, but for now blocking is acceptable for the debate phase.
         try:
-            # Since initiate_chat with 2 agents is tricky without a GroupChatManager,
-            # Let's use a GroupChat for robustness.
-            
             groupchat = autogen.GroupChat(
                 agents=[user_proxy, bull_agent, bear_agent], 
                 messages=[], 
@@ -89,5 +98,4 @@ class DebateRoom:
             return transcript
             
         except Exception as e:
-            print(f"Error during debate: {e}")
-            return f"Debate failed: {e}"
+            raise e

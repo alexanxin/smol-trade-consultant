@@ -4,7 +4,8 @@ import os
 import sys
 import argparse
 import time
-import requests
+import aiohttp
+import logging
 from dotenv import load_dotenv
 
 # Add project root to path
@@ -14,14 +15,25 @@ from backend.event_bus import EventBus, Event
 from backend.state_manager import StateManager
 from backend.orchestrator import Orchestrator
 from backend.position_monitor import PositionMonitor
+from backend.config import Config
+
+# Configure Logging
+logging.basicConfig(
+    level=getattr(logging, Config.LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger("TraderAgentV2")
 
 # Load environment variables
 load_dotenv()
 
 class TraderAgentV2:
-    def __init__(self, execution_mode: str = None, dry_run: bool = True, token: str = "SOL", 
-                 monitor_interval: int = 30, trailing_stop: bool = False, trailing_distance: float = 2.0):
-        print("Initializing Trader Agent V2 (TiMi Architecture)...")
+    def __init__(self, execution_mode: str = None, dry_run: bool = True, token: str = Config.DEFAULT_TOKEN, 
+                 monitor_interval: int = Config.DEFAULT_MONITOR_INTERVAL, trailing_stop: bool = False, trailing_distance: float = Config.DEFAULT_TRAILING_DISTANCE):
+        logger.info("Initializing Trader Agent V2 (TiMi Architecture)...")
         self.execution_mode = execution_mode
         self.dry_run = dry_run
         self.token = token
@@ -51,18 +63,27 @@ class TraderAgentV2:
             )
         
     async def start(self):
-        print("Starting Event Loop...")
+        logger.info("Starting Event Loop...")
         # Start Event Bus
         bus_task = asyncio.create_task(self.event_bus.start())
         
         # Start Position Monitor if enabled
         monitor_task = None
         if self.position_monitor:
-            print(f"Starting Position Monitor (interval={self.monitor_interval}s)...")
+            logger.info(f"Starting Position Monitor (interval={self.monitor_interval}s)...")
             monitor_task = asyncio.create_task(self.position_monitor.start())
         
         try:
             while True:
+                # 0. Check for existing open positions BEFORE starting analysis
+                if self.position_monitor:
+                    self.position_monitor.position_manager.refresh_positions()
+                    existing_positions = self.position_monitor.position_manager.get_all_positions()
+                    if existing_positions:
+                        logger.info(f"Found {len(existing_positions)} existing open positions. Skipping analysis and entering monitoring mode.")
+                        await self._monitor_positions_loop(self.token)
+                        continue
+
                 print("\n" + "="*50)
                 print(f"   STARTING ANALYSIS CYCLE: {self.token}")
                 print("="*50)
@@ -76,25 +97,25 @@ class TraderAgentV2:
                 plan = decision.get("plan", {})
                 token_address = final_state.token_address
                 
-                print(f"\nCycle Complete. Decision: {action}")
+                logger.info(f"Cycle Complete. Decision: {action}")
                 
                 # Smart Watch Logic
-                if action == "WAIT" or (action == "SELL" and not self.position_monitor.get_all_positions()):
-                    print("\n--- Entering Smart Watch Mode ---")
-                    print("Monitoring price for opportunities (saving API calls)...")
+                if action == "WAIT" or (action == "SELL" and not (self.position_monitor and self.position_monitor.position_manager.get_all_positions())):
+                    logger.info("--- Entering Smart Watch Mode ---")
+                    logger.info("Monitoring price for opportunities (saving API calls)...")
                     
                     target_entry = plan.get("entry_price")
                     if target_entry:
-                        print(f"Target Entry: ${target_entry:.4f}")
+                        logger.info(f"Target Entry: ${target_entry:.4f}")
                     
                     # Watch loop configuration
-                    watch_duration = 900  # 15 minutes max wait
+                    watch_duration = 3600  # 1 hour max wait (increased from 15m)
                     check_interval = 30   # Check price every 30 seconds
                     start_time = time.time()
                     
                     while (time.time() - start_time) < watch_duration:
-                        # 1. Fetch current price cheaply
-                        current_price = self._fetch_price_cheaply(token_address)
+                        # 1. Fetch current price cheaply (Async)
+                        current_price = await self._fetch_price_cheaply(token_address)
                         
                         if current_price:
                             timestamp = time.strftime("%H:%M:%S")
@@ -104,7 +125,7 @@ class TraderAgentV2:
                             if target_entry:
                                 # If price is within 0.5% of target, wake up
                                 if abs(current_price - target_entry) / target_entry < 0.005:
-                                    print(f"\n🎯 Price near target (${target_entry})! Triggering analysis...")
+                                    logger.info(f"\n🎯 Price near target (${target_entry})! Triggering analysis...")
                                     break
                                     
                                 # If price dips significantly (e.g. 2% drop), wake up
@@ -112,19 +133,16 @@ class TraderAgentV2:
                         
                         await asyncio.sleep(check_interval)
                     
-                    print("\nWatch cycle ended. Refreshing analysis...")
+                    logger.info("\nWatch cycle ended. Refreshing analysis...")
                     
                 else:
-                    # If we took action (BUY/SELL), wait 1 minute before re-checking
-                    print(f"\nAction taken. Waiting 60s before next cycle...")
-                    await asyncio.sleep(60)
+                    # If we took action (BUY/SELL), monitor position with PnL display
+                    await self._monitor_positions_loop(token_address)
             
         except KeyboardInterrupt:
-            print("\nShutting down...")
+            logger.info("\nShutting down...")
         except Exception as e:
-            print(f"\n❌ CRITICAL ERROR in Main Loop: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"\n❌ CRITICAL ERROR in Main Loop: {e}", exc_info=True)
         finally:
             self.event_bus.stop()
             if self.position_monitor:
@@ -140,12 +158,52 @@ class TraderAgentV2:
             
             await bus_task
 
-    def _fetch_price_cheaply(self, token_address):
-        """Fetches current price using Birdeye API (lightweight)."""
+    async def _monitor_positions_loop(self, token_address):
+        """Helper method to monitor positions indefinitely."""
+        logger.info(f"--- Monitoring Position ---")
+        
+        # Indefinite monitoring loop as long as positions exist
+        check_interval = self.monitor_interval  # Use configured interval
+        
+        while True:
+            # Refresh positions from DB to ensure we have the latest state
+            if self.position_monitor:
+                self.position_monitor.position_manager.refresh_positions()
+                open_positions = self.position_monitor.position_manager.get_all_positions()
+            else:
+                open_positions = []
+            
+            if not open_positions:
+                logger.info(f"\nNo open positions. Returning to analysis cycle...")
+                break
+            
+            # If token_address is not passed (e.g. on startup), try to fetch it from position or API
+            if not token_address or token_address == self.token:
+                 # Try to get address from the first position
+                 if open_positions:
+                     token_address = open_positions[0].token_address
+            
+            current_price = await self._fetch_price_cheaply(token_address)
+            
+            if current_price:
+                timestamp = time.strftime("%H:%M:%S")
+                
+                # Calculate PnL for each position
+                for pos in open_positions:
+                    if pos.symbol == self.token:
+                        pnl_pct = pos.calculate_pnl_percentage(current_price)
+                        pnl_usd = pos.calculate_pnl(current_price)
+                        sl_price = pos.stop_loss
+                        
+                        print(f"[{timestamp}] Price: ${current_price:.4f} | PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | SL: ${sl_price:.4f}", end="\r")
+            
+            await asyncio.sleep(check_interval)
+    async def _fetch_price_cheaply(self, token_address):
+        """Fetches current price using Birdeye API (lightweight & async)."""
         if not token_address:
             return None
             
-        api_key = os.getenv("BIRDEYE_API_KEY")
+        api_key = Config.BIRDEYE_API_KEY
         if not api_key:
             return None
             
@@ -153,35 +211,37 @@ class TraderAgentV2:
         headers = {"X-API-KEY": api_key}
         
         try:
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                return response.json().get('data', {}).get('value')
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=Config.API_TIMEOUT) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get('data', {}).get('value')
         except Exception:
             pass
         return None
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Trader Agent V2 - TiMi Architecture')
-    parser.add_argument('--token', type=str, default='SOL', help='Token symbol to analyze (e.g., SOL, BONK, JUP)')
+    parser.add_argument('--token', type=str, default=Config.DEFAULT_TOKEN, help='Token symbol to analyze (e.g., SOL, BONK, JUP)')
     parser.add_argument('--spot', action='store_true', help='Enable spot trading via Jupiter')
     parser.add_argument('--leverage', action='store_true', help='Enable leverage trading via Drift')
     parser.add_argument('--dry-run', dest='dry_run', action='store_true', default=True,
                         help='Simulate execution without actual trades (default: True)')
     parser.add_argument('--live', dest='dry_run', action='store_false',
                         help='Execute real trades (disables dry-run)')
-    parser.add_argument('--monitor-interval', type=int, default=30,
-                        help='Position monitoring interval in seconds (default: 30)')
+    parser.add_argument('--monitor-interval', type=int, default=Config.DEFAULT_MONITOR_INTERVAL,
+                        help=f'Position monitoring interval in seconds (default: {Config.DEFAULT_MONITOR_INTERVAL})')
     parser.add_argument('--trailing-stop', action='store_true',
                         help='Enable trailing stop-loss for positions')
-    parser.add_argument('--trailing-distance', type=float, default=2.0,
-                        help='Trailing stop distance as percentage (default: 2.0)')
+    parser.add_argument('--trailing-distance', type=float, default=Config.DEFAULT_TRAILING_DISTANCE,
+                        help=f'Trailing stop distance as percentage (default: {Config.DEFAULT_TRAILING_DISTANCE})')
     
     args = parser.parse_args()
     
     # Determine execution mode
     execution_mode = None
     if args.spot and args.leverage:
-        print("ERROR: Cannot enable both --spot and --leverage. Choose one.")
+        logger.error("Cannot enable both --spot and --leverage. Choose one.")
         sys.exit(1)
     elif args.spot:
         execution_mode = "spot"
@@ -191,9 +251,9 @@ if __name__ == "__main__":
     if execution_mode:
         mode_str = execution_mode.upper()
         run_mode = "DRY RUN" if args.dry_run else "LIVE"
-        print(f"🎯 Execution Mode: {mode_str} ({run_mode})")
+        logger.info(f"🎯 Execution Mode: {mode_str} ({run_mode})")
     else:
-        print("ℹ️  No execution mode specified. Running in analysis-only mode.")
+        logger.info("ℹ️  No execution mode specified. Running in analysis-only mode.")
     
     agent = TraderAgentV2(
         execution_mode=execution_mode, 

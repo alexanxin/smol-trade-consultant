@@ -6,9 +6,8 @@ from qdrant_client.models import PointStruct, VectorParams, Distance
 
 class MemoryManager:
     def __init__(self, collection_name: str = "market_experiences"):
-        # Initialize in-memory Qdrant for testing (no persistence, no locking issues)
-        # For production, use path="./qdrant_db" for persistence
-        self.client = QdrantClient(":memory:")
+        # Initialize persistent Qdrant for learning across sessions
+        self.client = QdrantClient(path="./qdrant_db")
         self.collection_name = collection_name
         self.vector_size = 10 # Dimension of our manual feature vector
         

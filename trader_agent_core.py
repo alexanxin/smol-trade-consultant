@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 import ta as technical_analysis_lib # Fallback to original library
 import subprocess
+import google.generativeai as genai
 
 # Load environment variables
 load_dotenv()
@@ -22,6 +23,10 @@ class TraderAgent:
         self.headers_birdeye = {"X-API-KEY": self.birdeye_api_key}
         self.headers_coingecko = {"x-cg-demo-api-key": self.coingecko_api_key}
         self.headers_coinmarketcap = {"X-CMC_PRO_API_KEY": self.coinmarketcap_api_key}
+        
+        # Configure Gemini API
+        if self.gemini_api_key:
+            genai.configure(api_key=self.gemini_api_key)
 
     async def fetch_data(self, token_symbol: str, chain: str = "solana"):
         """
@@ -704,8 +709,17 @@ class TraderAgent:
         # Create a text summary of the technicals
         tech_summary = self._generate_technical_summary(analysis_result)
         
+        # Extract Market Context (Volatility, Trend)
+        ltf = analysis_result.get("technical_analysis", {}).get("ltf", {})
+        market_structure = ltf.get("market_structure", {})
+        trend = market_structure.get("trend", "unknown")
+        
         # Combine structured data and text summary
         prompt_data = {
+            "market_context": {
+                "trend": trend,
+                "volatility_state": "High" if ltf.get("atr_pct", 0) > 0.02 else "Normal" # Placeholder logic
+            },
             "summary": tech_summary,
             "data": analysis_result
         }
@@ -834,46 +848,41 @@ class TraderAgent:
         full_prompt = f"{system_prompt}\n\n{prompt}"
         
         try:
-            process = await asyncio.create_subprocess_exec(
-                'gemini', full_prompt,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy()
-            )
-            stdout, stderr = await process.communicate()
+            # Use Web API instead of CLI
+            # Run blocking SDK call in thread pool to maintain async pattern
+            def _generate():
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                response = model.generate_content(full_prompt)
+                return response.text if response and response.text else None
             
-            if process.returncode != 0:
-                return {"error": f"Gemini CLI failed: {stderr.decode()}"}
+            response_text = await asyncio.to_thread(_generate)
+            
+            if response_text:
+                return {"analysis": response_text.strip()}
+            else:
+                return {"error": "Empty response from Gemini API"}
                 
-            response_text = stdout.decode().strip()
-            return {"analysis": response_text}
-                
-        except FileNotFoundError:
-            return {"error": "Gemini CLI not found"}
         except Exception as e:
-            return {"error": f"Error calling Gemini: {str(e)}"}
+            return {"error": f"Error calling Gemini API: {str(e)}"}
 
     async def _call_gemini(self, prompt: str, system_prompt: str) -> Dict:
         """
-        Calls Gemini API via CLI (as per original implementation) or Library.
-        Using subprocess for consistency with original setup if library setup is unknown.
+        Calls Gemini API and returns parsed JSON response.
         """
         full_prompt = f"{system_prompt}\n\n{prompt}"
         
-        # Use asyncio.create_subprocess_exec for async subprocess
         try:
-            process = await asyncio.create_subprocess_exec(
-                'gemini', full_prompt,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy()
-            )
-            stdout, stderr = await process.communicate()
+            # Use Web API instead of CLI
+            # Run blocking SDK call in thread pool to maintain async pattern
+            def _generate():
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                response = model.generate_content(full_prompt)
+                return response.text if response and response.text else None
             
-            if process.returncode != 0:
-                return {"error": f"Gemini CLI failed: {stderr.decode()}"}
-                
-            response_text = stdout.decode().strip()
+            response_text = await asyncio.to_thread(_generate)
+            
+            if not response_text:
+                return {"error": "Empty response from Gemini API"}
             
             # Extract JSON - handle multiple formats
             # 1. Try markdown code block with ```json
@@ -902,10 +911,8 @@ class TraderAgent:
             except json.JSONDecodeError:
                 return {"error": "Failed to decode JSON from Gemini response", "raw_output": response_text}
                 
-        except FileNotFoundError:
-            return {"error": "Gemini CLI not found"}
         except Exception as e:
-            return {"error": f"Error calling Gemini: {str(e)}"}
+            return {"error": f"Error calling Gemini API: {str(e)}"}
 
 # Example usage block (commented out)
 # async def main():

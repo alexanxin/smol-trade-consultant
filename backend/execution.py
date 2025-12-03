@@ -156,6 +156,10 @@ class ExecutionEngine:
             amount=amount_units,
             slippage_bps=100  # 1% slippage
         )
+        
+        # Add token address to result for position tracking
+        if result and 'error' not in result:
+            result['token_address'] = token_address
 
         return result
 
@@ -219,7 +223,24 @@ class ExecutionEngine:
             amount=amount_units,
             slippage_bps=100  # 1% slippage
         )
-
+        
+        # Calculate exit price if successful
+        if result and 'outAmount' in result and 'inAmount' in result:
+             # outAmount is in USDC (6 decimals) or SOL (9 decimals)
+             # inAmount is in SOL (9 decimals) or Token (decimals?)
+             
+             # Case 1: SOL -> USDC
+             if token == "SOL":
+                 out_amount = int(result['outAmount']) / (10**6)
+                 in_amount = int(result['inAmount']) / (10**9)
+                 if in_amount > 0:
+                     result['exit_price'] = out_amount / in_amount
+             
+             # Case 2: Token -> SOL (Approximate price in SOL, need USD price)
+             # For now, we might just use the quote price if available, or rely on the fact that we usually trade SOL/USDC
+             # If trading Token -> SOL, the exit price is in SOL. We might need to convert to USD if we want USD PnL.
+             # But for SOL trading (which is the main case), it works.
+             
         return result
 
     async def _execute_leverage_open(self, token: str, direction: str, kelly_size: float, plan: Dict) -> Dict[str, Any]:

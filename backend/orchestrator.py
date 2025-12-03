@@ -2,11 +2,13 @@ from typing import Dict, Any, TypedDict, Annotated
 from langgraph.graph import StateGraph, END
 import operator
 import asyncio
+import json
 from .state_manager import GlobalState
 from .agents import TechnicalAnalyst, SentimentAnalyst, MasterTrader
 from .debate_room import DebateRoom
 from .memory import MemoryManager
 from .risk_math import RiskEngine
+from .config import Config
 
 # Define the state dict for LangGraph
 class AgentState(TypedDict):
@@ -15,11 +17,20 @@ class AgentState(TypedDict):
     current_step: str
 
 class Orchestrator:
-    def __init__(self, state_manager: GlobalState, execution_mode: str = None, dry_run: bool = True, token: str = "SOL"):
+    def __init__(self, state_manager: GlobalState, execution_mode: str = None, dry_run: bool = True, token: str = Config.DEFAULT_TOKEN):
         self.state = state_manager
         self.execution_mode = execution_mode
         self.dry_run = dry_run
         self.token = token
+        
+        # Initialize Agents once (Optimization)
+        self.tech_analyst = TechnicalAnalyst()
+        self.sentiment_analyst = SentimentAnalyst()
+        self.debate_room = DebateRoom()
+        self.master_trader = MasterTrader()
+        self.risk_engine = RiskEngine()
+        self.memory = MemoryManager()
+        
         self.graph = self._build_graph()
         self.app = self.graph.compile()
 
@@ -44,22 +55,14 @@ class Orchestrator:
     async def _market_scan_node(self, state: AgentState):
         print("--- Node: Market Scan ---", flush=True)
         
-        # Initialize Agents & Memory
-        print("Initializing TechnicalAnalyst...", flush=True)
-        tech_analyst = TechnicalAnalyst()
-        print("Initializing SentimentAnalyst...", flush=True)
-        sentiment_analyst = SentimentAnalyst()
-        
-        memory = MemoryManager()
-        
         # Define the token to analyze
         token = self.token
         chain = "solana"
         
         # Run analysis in parallel
         print("Starting analysis tasks...", flush=True)
-        tech_task = tech_analyst.analyze(token, chain)
-        sentiment_task = sentiment_analyst.analyze(token)
+        tech_task = self.tech_analyst.analyze(token, chain)
+        sentiment_task = self.sentiment_analyst.analyze(token)
         
         print("Awaiting analysis results...", flush=True)
         try:
@@ -72,7 +75,7 @@ class Orchestrator:
         # Retrieve Memory
         print("Retrieving historical context...", flush=True)
         # We pass the full tech_result which contains raw_data
-        similar_experiences = memory.retrieve_similar_experiences(tech_result["raw_data"])
+        similar_experiences = self.memory.retrieve_similar_experiences(tech_result["raw_data"])
         
         memory_context = "NO SIMILAR PAST SITUATIONS FOUND."
         if similar_experiences:
@@ -88,6 +91,24 @@ class Orchestrator:
         volume_24h = market_data.get('v24h', market_data.get('volume', 'N/A'))
 
         # Update state with results
+        # Fetch current positions to inform the agent
+        from .position_manager import PositionManager
+        pm = PositionManager()
+        open_positions = pm.get_all_positions()
+        
+        position_status = "NO OPEN POSITIONS. YOU ARE FLAT."
+        if open_positions:
+            pos_details = []
+            for p in open_positions:
+                if p.symbol == token:
+                    pnl = p.calculate_pnl_percentage(float(current_price)) if current_price != 'N/A' else 0.0
+                    pos_details.append(f"- LONG {p.symbol} | Entry: ${p.entry_price:.4f} | Current P&L: {pnl:.2f}% | TP: ${p.take_profit:.4f} | SL: ${p.stop_loss:.4f}")
+            
+            if pos_details:
+                position_status = "OPEN POSITIONS:\n        " + "\n        ".join(pos_details)
+            else:
+                position_status = f"NO OPEN POSITIONS FOR {token}. (Holding other assets)"
+
         scan_summary = f"""
         MARKET DATA FOR {token}:
 
@@ -103,16 +124,12 @@ class Orchestrator:
 
         HISTORICAL CONTEXT (MEMORY):
         {memory_context}
+
+        CURRENT POSITION STATUS:
+        {position_status}
         """
         
-        # Store raw data in state for later use (simplification: attaching to state dict if we modified TypedDict, 
-        # but for now we just keep it in the message or we can hack it into the message list as a dict if needed, 
-        # but better to just re-fetch or assume agents have it. 
-        # Actually, let's pass the raw_data via a special message or just rely on the summary for the debate.)
-        
-        # We need to pass raw_data to execution node for storage. 
-        # Let's append it as a JSON string message or similar.
-        import json
+        # Store raw data in state for later use
         state_update = {
             "messages": [scan_summary, json.dumps(tech_result["raw_data"], default=str)], # Hack: passing raw data as 2nd message
             "current_step": "market_scan"
@@ -125,11 +142,8 @@ class Orchestrator:
         # Get the context from the previous step (first message)
         context = state["messages"][-2] # The summary is now second to last because we added raw data
         
-        # Initialize Debate Room
-        debate_room = DebateRoom()
-        
         # Run Debate
-        transcript = await debate_room.conduct_debate(context)
+        transcript = await self.debate_room.conduct_debate(context)
         
         return {
             "messages": [f"DEBATE TRANSCRIPT:\n{transcript}"],
@@ -141,33 +155,27 @@ class Orchestrator:
         
         transcript = state["messages"][-1]
         # Retrieve raw data from earlier message
-        import json
         try:
             raw_data = json.loads(state["messages"][1])
         except:
             print("Warning: Could not retrieve raw data for memory storage.")
             raw_data = {}
 
-        # Initialize Components
-        master_trader = MasterTrader()
-        risk_engine = RiskEngine()
-        memory = MemoryManager()
-        
         # Make Decision
-        decision = await master_trader.make_decision(transcript)
+        decision = await self.master_trader.make_decision(transcript)
         
         # Calculate Position Size
-        similar_exps = memory.retrieve_similar_experiences(raw_data)
+        similar_exps = self.memory.retrieve_similar_experiences(raw_data)
         confidence = decision.get('confidence', 50)
         
-        position_size = risk_engine.adaptive_sizing(confidence, similar_exps)
+        position_size = self.risk_engine.adaptive_sizing(confidence, similar_exps)
         
         # Update Plan
         if decision.get('plan'):
             decision['plan']['position_size_pct'] = position_size
             
         # Store Experience (Simulation: Assume we took the trade and result is unknown/neutral for now)
-        memory.store_experience(raw_data, decision, outcome=0.0)
+        self.memory.store_experience(raw_data, decision, outcome=0.0)
         
         print("\n========================================")
         print("       MASTER TRADER DECISION")
@@ -262,7 +270,13 @@ class Orchestrator:
                     token_address = result.get('token_address', 'SOL_ADDRESS_PLACEHOLDER')
                     if 'amount' not in result:
                         result['amount'] = 1.0
-                    position_manager.add_position(decision, result, token, token_address)
+                    position = position_manager.add_position(decision, result, token, token_address)
+                    
+                    # Immediately update position with current price to populate tracking fields
+                    entry_price = plan.get('entry', 0)
+                    if entry_price > 0:
+                        position_manager.update_position_price(position.trade_id, entry_price)
+                        print(f"[DEBUG] Initialized position tracking fields", flush=True)
             
             # Handle SELL/HOLD
             else:
@@ -318,6 +332,14 @@ class Orchestrator:
 
             print("========================================\n", flush=True)
         
+        # Update GlobalState with decision and token_address for main loop
+        from trader_agent_core import TraderAgent
+        agent = TraderAgent()
+        token_address = await agent._get_token_address(self.token, "solana")
+        
+        self.state.state.decision = decision
+        self.state.state.token_address = token_address
+        
         return {"current_step": "execution"}
 
     async def run_cycle(self):
@@ -334,14 +356,9 @@ class Orchestrator:
             for key, value in output.items():
                 print(f"Finished step: {key}")
                 # Update final state with the latest output
-                # The output from langgraph is usually a dict with the node name as key and the state update as value
-                # We want to capture the accumulated state
                 if isinstance(value, dict) and 'global_state' in value:
                     final_state = value['global_state']
                 elif isinstance(value, dict):
-                     # Sometimes it returns just the update, so we might need to merge or just rely on self.state.state
                      pass
         
-        # Since self.state.state is updated throughout the process (via StateManager), 
-        # we can just return the latest state from StateManager
         return self.state.state
