@@ -92,16 +92,18 @@ DECISION RULES:
   - "SELL": Open Short (if allowed) or Stay Flat.
   - "HOLD": Stay Flat (Wait).
 
-RISK MANAGEMENT:
-- STOP LOSS: 3-5% adverse movement.
-- TAKE PROFIT: 5-10% favorable movement.
-- Risk/Reward: Minimum 1:1.5.
+RISK MANAGEMENT (CRITICAL):
+- DO NOT use arbitrary percentages for SL/TP.
+- USE TECHNICAL LEVELS provided in the context (Fibonacci, FVGs, Order Blocks, Support/Resistance).
+- STOP LOSS: Place beyond invalidation point (e.g., below Swing Low, below Order Block).
+- TAKE PROFIT: Place at logical targets (e.g., Fibonacci Extensions, Liquidity Pools, Resistance).
+- Risk/Reward: Minimum 1:1.5 (Reward must be > 1.5x Risk).
 
 OUTPUT FORMAT (JSON ONLY):
 {
     "action": "BUY" | "SELL" | "HOLD",
     "confidence": 0-100,
-    "reasoning": "Concise explanation of your decision...",
+    "reasoning": "Concise explanation. EXPLICITLY CITE the technical level used for SL/TP.",
     "plan": {
         "entry": float,
         "stop_loss": float,

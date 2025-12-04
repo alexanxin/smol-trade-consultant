@@ -73,7 +73,7 @@ class TraderAgent:
         # but ideally we want this async too. 
         # Simplified lookup for common tokens to avoid API calls
         common_tokens = {
-            "solana": {"SOL": "So11111111111111111111111111111111111111112"},
+            "solana": {"SOL": "So11111111111111111111111111111111111111111"},
             "ethereum": {"ETH": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"},
             "bsc": {"BNB": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"}
         }

@@ -67,6 +67,10 @@ class TraderAgentV2:
         # Start Event Bus
         bus_task = asyncio.create_task(self.event_bus.start())
         
+        # Track last analysis time to prevent API quota exhaustion
+        last_analysis_time = 0
+        min_analysis_interval = 14400  # 4 hours minimum between full analysis cycles
+        
         # Start Position Monitor if enabled
         monitor_task = None
         if self.position_monitor:
@@ -83,6 +87,14 @@ class TraderAgentV2:
                         logger.info(f"Found {len(existing_positions)} existing open positions. Skipping analysis and entering monitoring mode.")
                         await self._monitor_positions_loop(self.token)
                         continue
+                
+                # Check if enough time has passed since last analysis
+                time_since_last_analysis = time.time() - last_analysis_time
+                if last_analysis_time > 0 and time_since_last_analysis < min_analysis_interval:
+                    remaining_time = min_analysis_interval - time_since_last_analysis
+                    logger.info(f"⏳ Cooldown active. Next analysis in {remaining_time/3600:.1f} hours to preserve API quota.")
+                    logger.info(f"💡 Tip: You've used your daily Gemini API quota. The agent will wait before running another full analysis.")
+                    await asyncio.sleep(remaining_time)
 
                 print("\n" + "="*50)
                 print(f"   STARTING ANALYSIS CYCLE: {self.token}")
@@ -90,6 +102,7 @@ class TraderAgentV2:
                 
                 # Run the full analysis cycle
                 final_state = await self.orchestrator.run_cycle()
+                last_analysis_time = time.time()  # Update last analysis time
                 
                 # Extract decision (final_state is a GlobalState Pydantic model)
                 decision = final_state.decision or {}
@@ -99,8 +112,19 @@ class TraderAgentV2:
                 
                 logger.info(f"Cycle Complete. Decision: {action}")
                 
+                # Ensure we have a token_address for watch mode
+                if not token_address:
+                    logger.warning("⚠️  Token address not available. Fetching...")
+                    from trader_agent_core import TraderAgent
+                    agent = TraderAgent()
+                    token_address = await agent._get_token_address(self.token, "solana")
+                    if not token_address:
+                        logger.error(f"❌ Could not fetch token address for {self.token}. Waiting 1 hour before retry...")
+                        await asyncio.sleep(3600)
+                        continue
+                
                 # Smart Watch Logic
-                if action == "WAIT" or (action == "SELL" and not (self.position_monitor and self.position_monitor.position_manager.get_all_positions())):
+                if action == "WAIT" or action is None or (action == "SELL" and not (self.position_monitor and self.position_monitor.position_manager.get_all_positions())):
                     logger.info("--- Entering Smart Watch Mode ---")
                     logger.info("Monitoring price for opportunities (saving API calls)...")
                     
@@ -108,10 +132,12 @@ class TraderAgentV2:
                     if target_entry:
                         logger.info(f"Target Entry: ${target_entry:.4f}")
                     
-                    # Watch loop configuration
-                    watch_duration = 3600  # 1 hour max wait (increased from 15m)
-                    check_interval = 30   # Check price every 30 seconds
+                    # Watch loop configuration - increased to 6 hours to save API quota
+                    watch_duration = 21600  # 6 hours (increased from 1 hour)
+                    check_interval = 60   # Check price every 60 seconds (reduced frequency)
                     start_time = time.time()
+                    
+                    logger.info(f"⏰ Will watch for {watch_duration/3600:.0f} hours before re-analyzing...")
                     
                     while (time.time() - start_time) < watch_duration:
                         # 1. Fetch current price cheaply (Async)
@@ -130,6 +156,10 @@ class TraderAgentV2:
                                     
                                 # If price dips significantly (e.g. 2% drop), wake up
                                 # (Requires tracking last price, omitted for simplicity)
+                        else:
+                            # If price fetch fails, still wait the interval to avoid tight loop
+                            timestamp = time.strftime("%H:%M:%S")
+                            print(f"[{timestamp}] Waiting... (price unavailable)", end="\r")
                         
                         await asyncio.sleep(check_interval)
                     
@@ -199,25 +229,52 @@ class TraderAgentV2:
             
             await asyncio.sleep(check_interval)
     async def _fetch_price_cheaply(self, token_address):
-        """Fetches current price using Birdeye API (lightweight & async)."""
+        """Fetches current price using Birdeye API with CoinGecko fallback."""
         if not token_address:
             return None
-            
-        api_key = Config.BIRDEYE_API_KEY
-        if not api_key:
-            return None
-            
-        url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
-        headers = {"X-API-KEY": api_key}
         
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=Config.API_TIMEOUT) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return data.get('data', {}).get('value')
-        except Exception:
-            pass
+        # Try Birdeye first
+        api_key = Config.BIRDEYE_API_KEY
+        if api_key:
+            url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+            headers = {"X-API-KEY": api_key}
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=Config.API_TIMEOUT) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            price = data.get('data', {}).get('value')
+                            if price:
+                                return price
+            except Exception:
+                pass
+        
+        # Fallback to CoinGecko
+        coingecko_key = Config.COINGECKO_API_KEY
+        token_id_map = {
+            "So11111111111111111111111111111111111111111": "solana",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "usd-coin",
+        }
+        
+        coingecko_id = token_id_map.get(token_address)
+        if coingecko_id:
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_id}&vs_currencies=usd"
+            headers = {}
+            if coingecko_key:
+                headers["x-cg-demo-api-key"] = coingecko_key
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=Config.API_TIMEOUT) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            price = data.get(coingecko_id, {}).get('usd')
+                            if price:
+                                return float(price)
+            except Exception:
+                pass
+        
         return None
 
 if __name__ == "__main__":
