@@ -26,3 +26,12 @@ class Config:
     
     # System
     LOG_LEVEL = "INFO"
+
+    # Token Mints
+    SOL_MINT = "So11111111111111111111111111111111111111111"
+    USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+    # API URLs
+    JUPITER_BASE_URL = "https://lite-api.jup.ag/swap/v1"
+    BIRDEYE_BASE_URL = "https://public-api.birdeye.so"
+    COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
