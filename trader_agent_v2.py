@@ -101,7 +101,14 @@ class TraderAgentV2:
                 print("="*50)
                 
                 # Run the full analysis cycle
-                final_state = await self.orchestrator.run_cycle()
+                try:
+                    final_state = await self.orchestrator.run_cycle()
+                except ValueError as e:
+                    logger.error(f"\n⚠️  {e}")
+                    logger.info("Waiting 5 minutes before retrying...")
+                    await asyncio.sleep(300)
+                    continue
+                    
                 last_analysis_time = time.time()  # Update last analysis time
                 
                 # Extract decision (final_state is a GlobalState Pydantic model)
@@ -213,68 +220,38 @@ class TraderAgentV2:
                  if open_positions:
                      token_address = open_positions[0].token_address
             
-            current_price = await self._fetch_price_cheaply(token_address)
+            # Optimization: Do NOT fetch price here if PositionMonitor is running.
+            # PositionMonitor already fetches price and updates the DB.
+            # We just display the latest state from DB.
             
-            if current_price:
-                timestamp = time.strftime("%H:%M:%S")
-                
-                # Calculate PnL for each position
-                for pos in open_positions:
-                    if pos.symbol == self.token:
+            timestamp = time.strftime("%H:%M:%S")
+            
+            # Calculate PnL for each position based on stored price (updated by PositionMonitor)
+            for pos in open_positions:
+                if pos.symbol == self.token:
+                    current_price = pos.current_price
+                    if current_price:
                         pnl_pct = pos.calculate_pnl_percentage(current_price)
                         pnl_usd = pos.calculate_pnl(current_price)
                         sl_price = pos.stop_loss
                         
                         print(f"[{timestamp}] Price: ${current_price:.4f} | PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | SL: ${sl_price:.4f}", end="\r")
+                    else:
+                         print(f"[{timestamp}] Waiting for price update...", end="\r")
             
             await asyncio.sleep(check_interval)
     async def _fetch_price_cheaply(self, token_address):
-        """Fetches current price using Birdeye API with CoinGecko fallback."""
-        if not token_address:
-            return None
-        
-        # Try Birdeye first
-        api_key = Config.BIRDEYE_API_KEY
-        if api_key:
-            url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
-            headers = {"X-API-KEY": api_key}
+        """Fetches current price using robust logic (Birdeye -> Jupiter -> CoinGecko OHLCV)."""
+        try:
+            # Use the core agent from the orchestrator's technical analyst
+            # This ensures we reuse the robust fetching logic with fallbacks
+            market_data, _ = await self.orchestrator.tech_analyst.core_agent.fetch_data(self.token, "solana")
+            price = market_data.get('value')
+            if price:
+                return float(price)
+        except Exception as e:
+            logger.error(f"Error fetching price: {e}")
             
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, headers=headers, timeout=Config.API_TIMEOUT) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            price = data.get('data', {}).get('value')
-                            if price:
-                                return price
-            except Exception:
-                pass
-        
-        # Fallback to CoinGecko
-        coingecko_key = Config.COINGECKO_API_KEY
-        token_id_map = {
-            "So11111111111111111111111111111111111111111": "solana",
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "usd-coin",
-        }
-        
-        coingecko_id = token_id_map.get(token_address)
-        if coingecko_id:
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_id}&vs_currencies=usd"
-            headers = {}
-            if coingecko_key:
-                headers["x-cg-demo-api-key"] = coingecko_key
-            
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, headers=headers, timeout=Config.API_TIMEOUT) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            price = data.get(coingecko_id, {}).get('usd')
-                            if price:
-                                return float(price)
-            except Exception:
-                pass
-        
         return None
 
 if __name__ == "__main__":

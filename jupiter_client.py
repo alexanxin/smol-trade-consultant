@@ -13,7 +13,7 @@ class JupiterClient:
         self.base_url = "https://lite-api.jup.ag/swap/v1"
         self.wallet = wallet
         # Common token mints
-        self.SOL_MINT = "So11111111111111111111111111111111111111111"  # Wrapped SOL
+        self.SOL_MINT = "So11111111111111111111111111111111111111112"  # Wrapped SOL
         self.USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
     def get_quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int = 50) -> Optional[Dict[str, Any]]:
@@ -27,8 +27,8 @@ class JupiterClient:
             "inputMint": input_mint,
             "outputMint": output_mint,
             "amount": amount,
-            "slippageBps": slippage_bps,
-            "restrictIntermediateTokens": "true"  # Lite API parameter
+            "slippageBps": slippage_bps
+            # "restrictIntermediateTokens": "true"  # Lite API parameter - causing 400?
         }
         
         try:

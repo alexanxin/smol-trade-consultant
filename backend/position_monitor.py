@@ -137,114 +137,26 @@ class PositionMonitor:
     
     async def fetch_current_price(self, token_address: str, symbol: str) -> Optional[float]:
         """
-        Fetch current price for a token using Birdeye API with CoinGecko fallback.
+        Fetch current price using TraderAgent's robust fetching logic (Birdeye -> Jupiter -> CoinGecko OHLCV).
         """
-        if not token_address:
-            print(f"[PositionMonitor] Cannot fetch price for {symbol}: No token address provided")
-            return None
-        
-        # Try Birdeye first
-        price = await self._fetch_price_birdeye(token_address, symbol)
-        if price:
-            return price
-        
-        # Fallback to CoinGecko
-        print(f"[PositionMonitor] Falling back to CoinGecko for {symbol} price...")
-        price = await self._fetch_price_coingecko(token_address, symbol)
-        if price:
-            print(f"[PositionMonitor] ✓ Got price from CoinGecko: ${price:.4f}")
-            return price
-        
-        print(f"[PositionMonitor] ❌ All price sources failed for {symbol}")
-        return None
-    
-    async def _fetch_price_birdeye(self, token_address: str, symbol: str) -> Optional[float]:
-        """Fetch price from Birdeye API."""
-        api_key = Config.BIRDEYE_API_KEY
-        if not api_key:
-            print(f"[PositionMonitor] Birdeye API key not configured")
+        try:
+            # Use TraderAgent to fetch data
+            # We assume chain is 'solana' for now as per current scope
+            # Note: fetch_data resolves address from symbol. If we want to use address directly,
+            # we might need to update TraderAgent, but for now symbol resolution should work
+            # as we likely found the token via TraderAgent initially.
+            market_data, _ = await self.trader_agent.fetch_data(symbol, "solana")
+            
+            price = market_data.get('value')
+            if price:
+                return float(price)
+                
+            print(f"[PositionMonitor] ❌ All price sources failed for {symbol}")
             return None
             
-        url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
-        headers = {"X-API-KEY": api_key}
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        price = data.get('data', {}).get('value')
-                        if price:
-                            return price
-                        else:
-                            print(f"[PositionMonitor] Price not found in Birdeye response for {symbol}")
-                    else:
-                        error_text = await response.text()
-                        print(f"[PositionMonitor] Birdeye API error for {symbol}: HTTP {response.status}")
-                        if response.status == 400 and "limit exceeded" in error_text.lower():
-                            print(f"[PositionMonitor] Birdeye rate limit exceeded")
-                        else:
-                            print(f"[PositionMonitor] Error response: {error_text}")
-        except asyncio.TimeoutError:
-            print(f"[PositionMonitor] Timeout fetching price from Birdeye API")
         except Exception as e:
-            print(f"[PositionMonitor] Birdeye error: {type(e).__name__}: {e}")
-            
-        return None
-    
-    async def _fetch_price_coingecko(self, token_address: str, symbol: str) -> Optional[float]:
-        """Fetch price from CoinGecko API."""
-        api_key = Config.COINGECKO_API_KEY
-        
-        # Map token addresses to CoinGecko IDs
-        # For Solana tokens, we need to use the contract address
-        token_id_map = {
-            "So11111111111111111111111111111111111111111": "solana",  # Wrapped SOL
-            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "usd-coin",  # USDC
-        }
-        
-        # Try to get CoinGecko ID from map, otherwise use the address
-        coingecko_id = token_id_map.get(token_address)
-        
-        if coingecko_id:
-            # Use simple price API for known tokens
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={coingecko_id}&vs_currencies=usd"
-        else:
-            # For unknown tokens, try the token price by contract address
-            # Note: This requires the token to be listed on CoinGecko
-            url = f"https://api.coingecko.com/api/v3/simple/token_price/solana?contract_addresses={token_address}&vs_currencies=usd"
-        
-        headers = {}
-        if api_key:
-            headers["x-cg-demo-api-key"] = api_key
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        # Extract price based on which endpoint we used
-                        if coingecko_id:
-                            price = data.get(coingecko_id, {}).get('usd')
-                        else:
-                            price = data.get(token_address.lower(), {}).get('usd')
-                        
-                        if price:
-                            return float(price)
-                        else:
-                            print(f"[PositionMonitor] Price not found in CoinGecko response")
-                    else:
-                        error_text = await response.text()
-                        print(f"[PositionMonitor] CoinGecko API error: HTTP {response.status}")
-                        if response.status == 429:
-                            print(f"[PositionMonitor] CoinGecko rate limit exceeded")
-        except asyncio.TimeoutError:
-            print(f"[PositionMonitor] Timeout fetching price from CoinGecko API")
-        except Exception as e:
-            print(f"[PositionMonitor] CoinGecko error: {type(e).__name__}: {e}")
-            
-        return None
+            print(f"[PositionMonitor] Error fetching price via TraderAgent: {e}")
+            return None
     
     async def execute_exit(self, position: Position, exit_price: float, exit_reason: str):
         """

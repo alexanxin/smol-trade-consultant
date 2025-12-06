@@ -88,7 +88,14 @@ class Orchestrator:
         market_data = tech_result.get("market_data", {})
         current_price = market_data.get('value', 'N/A')
         liquidity = market_data.get('liquidity', 'N/A')
-        volume_24h = market_data.get('v24h', market_data.get('volume', 'N/A'))
+        volume_24h = market_data.get('volume', market_data.get('v24h', 'N/A'))
+        
+        # Data Validation
+        if current_price == 'N/A' or liquidity == 'N/A' or volume_24h == 'N/A' or \
+           current_price == 0 or liquidity == 0 or volume_24h == 0:
+            error_msg = f"CRITICAL DATA MISSING: Price={current_price}, Liquidity={liquidity}, Volume={volume_24h}. Aborting cycle."
+            print(f"❌ {error_msg}")
+            raise ValueError(error_msg)
 
         # Update state with results
         # Fetch current positions to inform the agent
