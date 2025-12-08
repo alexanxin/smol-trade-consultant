@@ -17,17 +17,18 @@ class AgentState(TypedDict):
     current_step: str
 
 class Orchestrator:
-    def __init__(self, state_manager: GlobalState, execution_mode: str = None, dry_run: bool = True, token: str = Config.DEFAULT_TOKEN):
+    def __init__(self, state_manager: GlobalState, execution_mode: str = None, dry_run: bool = True, token: str = Config.DEFAULT_TOKEN, ai_provider: str = "auto"):
         self.state = state_manager
         self.execution_mode = execution_mode
         self.dry_run = dry_run
         self.token = token
+        self.ai_provider = ai_provider
         
         # Initialize Agents once (Optimization)
         self.tech_analyst = TechnicalAnalyst()
         self.sentiment_analyst = SentimentAnalyst()
-        self.debate_room = DebateRoom()
-        self.master_trader = MasterTrader()
+        self.debate_room = DebateRoom(ai_provider=ai_provider)
+        self.master_trader = MasterTrader(ai_provider=ai_provider)
         self.risk_engine = RiskEngine()
         self.memory = MemoryManager()
         

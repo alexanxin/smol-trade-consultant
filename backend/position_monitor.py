@@ -20,12 +20,13 @@ logger = logging.getLogger("PositionMonitor")
 class PositionMonitor:
     """Continuously monitors positions and triggers exits when conditions are met."""
     
-    def __init__(self, execution_mode: str = "spot", dry_run: bool = True, 
+    def __init__(self, execution_mode: str = "spot", dry_run: bool = True,
                  token: str = "SOL", monitor_interval: int = 30,
-                 trailing_stop: bool = False, trailing_distance: float = 2.0):
+                 trailing_stop: bool = False, trailing_distance: float = 2.0,
+                 market_timing=None):
         """
         Initialize Position Monitor.
-        
+
         Args:
             execution_mode: 'spot' or 'leverage'
             dry_run: If True, simulate exits without actual trades
@@ -33,6 +34,7 @@ class PositionMonitor:
             monitor_interval: Seconds between monitoring checks
             trailing_stop: Enable trailing stop-loss
             trailing_distance: Trailing stop distance as percentage (e.g., 2.0 for 2%)
+            market_timing: Optional MarketTiming instance to share price history
         """
         self.execution_mode = execution_mode
         self.dry_run = dry_run
@@ -41,20 +43,26 @@ class PositionMonitor:
         self.trailing_stop = trailing_stop
         self.trailing_distance = trailing_distance / 100.0  # Convert percentage to decimal
         self.running = False
-        
+        self.market_timing = market_timing  # Shared MarketTiming instance
+
         # Initialize components
         self.position_manager = PositionManager()
         self.execution_engine = ExecutionEngine(mode=execution_mode, dry_run=dry_run)
         self.trader_agent = TraderAgent()
-        
+
         trailing_info = f", trailing_stop={trailing_stop}" if trailing_stop else ""
         print(f"[PositionMonitor] Initialized (mode={execution_mode}, dry_run={dry_run}, interval={monitor_interval}s{trailing_info})")
     
     async def start(self):
         """Start the monitoring loop."""
         self.running = True
-        print("[PositionMonitor] Starting monitoring loop...")
-        
+        positions = self.position_manager.get_all_positions()
+        position_count = len(positions)
+        print(f"[PositionMonitor] Starting monitoring loop... ({position_count} positions to monitor)")
+
+        if position_count == 0:
+            print("[PositionMonitor] ℹ️  No active positions - monitoring paused until positions exist")
+
         try:
             await self.monitor_loop()
         except asyncio.CancelledError:
@@ -72,22 +80,27 @@ class PositionMonitor:
     
     async def monitor_loop(self):
         """Main monitoring loop - continuously checks all positions."""
+        check_count = 0
         while self.running:
             try:
+                check_count += 1
                 positions = self.position_manager.get_all_positions()
-                
+
                 if positions:
-                    print(f"\n[PositionMonitor] Checking {len(positions)} position(s)...")
-                    
+                    print(f"\n[PositionMonitor] 🔍 Check #{check_count} - Monitoring {len(positions)} position(s) at {self.monitor_interval}s intervals")
+
                     # Check each position
                     for position in positions:
                         await self.check_position(position)
-                
+                else:
+                    # Show market status information even with no positions
+                    await self.show_market_status(check_count)
+
                 # Sleep for interval
                 await asyncio.sleep(self.monitor_interval)
-                
+
             except Exception as e:
-                print(f"[PositionMonitor] Error in monitor loop: {e}")
+                print(f"[PositionMonitor] ❌ Error in check #{check_count}: {e}")
                 await asyncio.sleep(self.monitor_interval)
     
     async def check_position(self, position: Position):
@@ -212,3 +225,59 @@ class PositionMonitor:
         else:
             print(f"[PositionMonitor] ℹ️  EXIT SIMULATED")
         print(f"[PositionMonitor] ========================================\n")
+
+    async def show_market_status(self, check_count: int):
+        """
+        Show market status information even when no positions exist.
+
+        Args:
+            check_count: Current check number for display
+        """
+        try:
+            # Fetch current market data on EVERY check to build price history
+            market_data, _ = await self.trader_agent.fetch_data(self.token, "solana")
+            current_price = market_data.get('value', 0) if market_data else None
+
+            if current_price and self.market_timing:
+                # ALWAYS update price history for volatility tracking (even if not displaying)
+                self.market_timing.update_price_history(current_price)
+
+            # Display status less frequently to avoid spam
+            if check_count % 5 == 1:  # Every 5th check (every 2.5 minutes at 30s intervals)
+                if current_price and self.market_timing:
+                    # Use shared market timing instance with updated price history
+                    status = self.market_timing.get_current_market_status(current_price)
+
+                    # Display market status
+                    volatility_icon = {"low": "🟢", "medium": "🟡", "high": "🟠", "extreme": "🔴", "unknown": "⚪"}.get(status.volatility_level, "⚪")
+
+                    print(f"\n[PositionMonitor] 📊 Market Status (Check #{check_count})")
+                    print(f"[PositionMonitor]    💰 Price: ${current_price:.4f}")
+                    print(f"[PositionMonitor]    {volatility_icon} Volatility: {status.volatility_level.upper()}")
+
+                    # Show volume if available
+                    volume = market_data.get('volume') or market_data.get('v24h')
+                    if volume:
+                        print(f"[PositionMonitor]    📊 24h Volume: {volume:,.0f}")
+
+                    # Show liquidity if available
+                    liquidity = market_data.get('liquidity')
+                    if liquidity:
+                        print(f"[PositionMonitor]    💧 Liquidity: {liquidity:,.0f}")
+
+                    # Show current session
+                    session_name = status.current_session.name if status.current_session else "Outside sessions"
+                    print(f"[PositionMonitor]    📅 Session: {session_name}")
+
+                    # Show ORB strategy readiness
+                    should_run_orb, orb_reason = self.market_timing.should_run_orb_strategy(current_price)
+                    orb_status = "✅ READY" if should_run_orb else "⏸️  WAITING"
+                    print(f"[PositionMonitor]    🎯 ORB Strategy: {orb_status} - {orb_reason}")
+
+                    # Show recommendation
+                    print(f"[PositionMonitor]    💡 {status.recommendation}")
+
+        except Exception as e:
+            # Don't spam with errors, just log occasionally
+            if check_count % 10 == 1:  # Every 10th check
+                print(f"[PositionMonitor] ⚠️  Market status check failed: {e}")

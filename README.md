@@ -1,354 +1,321 @@
-# Trader Agent
+# VARMA Trading Agent V3 🚀
 
-A Python-based trading agent that uses AI to analyze cryptocurrency market data and generate trade signals. The agent fetches real-time market data, calculates advanced technical indicators, and uses Google's Gemini AI to generate high-conviction trading signals based on Smart Money Concepts (SMC).
+**Samir Varma's Quantitative Trading System - Production-Ready Implementation**
 
-## Features
+[![Tests](https://img.shields.io/badge/tests-59%20passing-brightgreen)](https://github.com/alexanxin/smol-trade-consultant)
+[![Python](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-- Real-time market data fetching from Birdeye and CoinGecko APIs
-- Advanced technical analysis including RSI, MACD, Fair Value Gaps (FVG), and price change calculations
-- Multi-timeframe analysis (5-minute for execution, 1-hour for bias)
-- AI-powered trade signal generation using Google's Gemini
-- Support for multiple blockchain networks
-- Dual-mode operation: Trade signals or comprehensive market analysis
-- Smart Money Concepts (SMC) based analysis including liquidity analysis, order flow, and market structure
-- Command-line interface for easy execution
-- **Multi-Agent System**:
-    - **News Agent**: Fetches real-time news from Google News RSS for sentiment analysis
-    - **Risk Manager Agent**: Critiques and validates trade signals to reduce false positives
+A sophisticated algorithmic trading agent implementing Samir Varma's methodologies for regime-based trend following and risk management on Solana.
 
-## Enhanced Capabilities
+## 📈 Key Features
 
-### Advanced Technical Analysis
+### 🎯 **Core Trading Strategies**
+- **Trend Following**: 183-day regime classification with RISK_ON/OFF positioning
+- **ORB Strategy**: Opening Range Breakout detection for intraday moves
+- **Dual Strategy Support**: Switch between strategies via command line
 
-- **Fair Value Gap (FVG) Detection**: Identifies bullish and bearish FVGs on multiple timeframes
-- **Liquidity Level Analysis**: Calculates significant support/resistance levels based on volume and price action
-- **Volume Profile Metrics**: Analyzes volume distribution and identifies high/low volume thresholds
-- **Market Structure Analysis**: Detects swing highs/lows and recent market structure changes
-- **Volume Analytics**: Tracks volume trends, spikes, and compares current volume to averages
+### 🛡️ **Advanced Risk Management**
+- **Kelly Criterion**: Fractional Kelly with 0.25x dampener for optimal sizing
+- **Regime-Based Sizing**: 1.5x RISK_ON, 0.5x RISK_OFF multipliers
+- **45% Max Drawdown Target**: Conservative risk limits vs traditional 3%
+- **Pre-Trade Validation**: Comprehensive safety checks before execution
 
-### Comprehensive Market Analysis
+### 🎪 **Smart Execution**
+- **Order Camouflage**: Odd-lot sizing and non-round stops to avoid front-running
+- **Jupiter DEX Integration**: Live spot trading on Solana
+- **Slippage Protection**: 1% slippage tolerance for reliable execution
+- **Trailing Stops**: Optional automated profit protection
 
-- **Market Overview**: Live price, 24h change, volume, and liquidity analysis
-- **Price & Momentum Read**: Multi-timeframe analysis with detailed momentum assessment
-- **Liquidity & Order Flow**: Detailed buy/sell side liquidity analysis with liquidity imbalance identification
-- **Fair Value Gaps (FVGs)**: Automatic FVG detection with zone, type, and impact analysis
-- **Trading Plan Generation**: Entry/exit levels with risk-to-reward ratio calculations
-- **Analyst's Take**: Professional market interpretation with clear trading bias
-- **Analyst's Take**: Professional market interpretation with clear trading bias
+### 📊 **Performance & Monitoring**
+- **Real-Time P&L**: Live position tracking and unrealized gains/losses
+- **Historical Performance**: Dynamic Kelly updates from trade history
+- **Database Integration**: Complete trade audit trail and analytics
+- **Position Monitoring**: Automated stop loss management
 
-### Multi-Agent Architecture
+## 🏗️ Architecture
 
-The system now employs a collaborative multi-agent approach:
-
-1.  **News Agent**: Scours Google News RSS for the latest headlines related to the specific token to provide qualitative context (sentiment, major events).
-2.  **Strategy Agent**: The core analyst that processes technical data and news to generate the initial trade signal.
-3.  **Risk Manager Agent**: A "Devil's Advocate" agent that critiques the Strategy Agent's signal. It checks for weak reasoning, conflicting data, or high risk, and has the authority to **reject** or **downgrade** the signal.
-### Optimal Trading Timeframes & Styles
-
-The trader agent is **optimally designed for scalping and short-term day trading** with institutional-grade precision through Auction Market Theory (AMT) integration.
-
-#### 📊 Multi-Timeframe Analysis
-
-- **LTF (Lower TimeFrame)**: **5-minute data** - For execution and entry precision
-- **HTF (Higher TimeFrame)**: **1-hour data** - For bias/trend direction confirmation
-- **Daily**: **1-day data** - For broader market context and risk management
-
-#### 🎯 Primary Trading Styles
-
-**Scalping (1-15 minutes):**
-
-- ✅ Ultra-precise LVN (Low Volume Node) targeting
-- ✅ POC (Point of Control) retest entries
-- ✅ Volume spike breakout detection
-- ✅ Quick in/out trades with minimal risk
-
-**Day Trading (15 minutes - 4 hours):**
-
-- ✅ AMT Model 1: Trend Following during high volatility sessions
-- ✅ AMT Model 2: Mean Reversion during range-bound periods
-- ✅ Session-aware bias direction and strategy selection
-
-#### ⚡ AMT-Enhanced Performance by Timeframe
-
-| **Trading Style**     | **Primary Timeframe** | **Typical Hold Time** | **AMT Advantage**                                |
-| --------------------- | --------------------- | --------------------- | ------------------------------------------------ |
-| **Scalping**          | 5-minute              | 1-15 minutes          | LVN precision, volume spikes, aggression scoring |
-| **Quick Day Trading** | 5-minute              | 15-120 minutes        | Model 1+2 flexibility, session optimization      |
-| **Swing Day Trading** | 1-hour                | 2-4 hours             | Market state clarity, trend confirmation         |
-
-#### 🌍 Session-Specific Optimizations
-
-The AMT integration provides intelligent session-aware recommendations:
-
-- **London-NY Overlap (9-14 UTC)**: Model 1 (Trend Following) - High volatility scalping
-- **London Session (6-9 UTC)**: Model 2 (Mean Reversion) - Range trading and scalping
-- **New York Session (14-18 UTC)**: Model 1 (Trend Following) - Momentum capture
-- **Asian Session (0-6 UTC)**: Model 2 (Mean Reversion) - Consolidation trades
-
-#### 💡 Key Benefits for Scalping/Day Trading
-
-- **Objective Level Identification**: POC and LVN-based entries reduce guesswork
-- **Market State Awareness**: Automatic balance vs imbalance detection
-- **Aggression Confirmation**: Volume-based trade validation system
-- **Session Intelligence**: Time-of-day strategy optimization
-- **Location-Based Risk Management**: Stops placed at volume profile levels
-
-#### 📈 Performance Expectations
-
-**5-Minute LTF Advantages:**
-
-- High frequency signal generation
-- Precise entry/exit point identification
-- Multiple daily trading opportunities
-- Lower capital requirements for position sizing
-- Quick feedback on strategy effectiveness
-
-**Optimal Hold Times by Strategy:**
-
-- **Scalping**: 5-30 minutes
-- **Day Trading**: 30 minutes - 4 hours
-- **Swing components**: 4+ hours (using HTF bias confirmation)
-
-## Supported Networks
-
-The trader agent supports the following blockchain networks:
-
-- **Solana** - Supports SOL and other SPL tokens
-- **Ethereum** - Supports ETH and ERC-20 tokens
-- **Binance Smart Chain (BSC)** - Supports BNB and BEP-20 tokens
-
-### Minimal Cost-Optimized Mode
-
-For high-frequency monitoring without AI costs:
-
-```bash
-python trader-agent.py --token SOL --mode minimal
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   VarmaAgent    │───▶│  Risk Engine     │───▶│   Strategies    │
+│   (Async Core)  │    │  (Kelly + Regime)│    │ (Trend + ORB)  │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         │                        │                        │
+         ▼                        ▼                        ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│ Smart Execution │───▶│  Jupiter Client  │───▶│   Database      │
+│  (Camouflage)   │    │  (Live Trading)  │    │ (Positions)     │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
 
-This mode provides basic signals using simple logic (RSI + price change) without calling Gemini API, making it completely free to run and perfect for frequent monitoring.
+## 🚀 Quick Start
 
-- **Polygon** - Supports MATIC and other Polygon tokens
+### Prerequisites
+- Python 3.11+
+- Solana wallet with SOL
+- USDC for trading (optional)
 
-## Installation
-
-### Command Line Arguments
-
-- `--token` - Token symbol (e.g., SOL, BTC, ETH) - Default: SOL
-- `--chain` - Blockchain network (e.g., solana, ethereum, bsc) - Default: solana
-- `--mode` - Output mode: `signal` for trade signal, `analysis` for comprehensive market analysis, `minimal` for bare minimum data and signals (no AI, cost-optimized)
-
-## Cost Optimization Strategies
-
-### Token Cost Management
-
-Since Gemini API calls consume tokens and incur costs, the trader agent provides multiple modes and strategies to optimize usage:
-
-#### 🆓 **Minimal Mode (Zero AI Cost)**
-
-For frequent monitoring without AI costs, use minimal mode:
+### Installation
 
 ```bash
-python trader-agent.py --token SOL --mode minimal
-```
+# Clone repository
+git clone https://github.com/alexanxin/smol-trade-consultant.git
+cd smol-trade-consultant
 
-**Benefits:**
-
-- **Zero Gemini API calls** - Completely free to run
-- **Quick signals** - Based on simple RSI and price change logic
-- **Frequent monitoring** - Can be called every 1-5 minutes without cost concerns
-- **Essential data only** - Price, 1H change, RSI, and basic momentum
-
-**Best for:**
-
-- High-frequency monitoring during active trading sessions
-- Market overview checks
-- Backup signals when AI is unavailable
-- Cost-conscious traders
-
-#### 💰 **Cost-Effective Frequency Strategy**
-
-| **Trading Session (UTC)**    | **Recommended Frequency** | **Mode**              | **Daily Cost** |
-| ---------------------------- | ------------------------- | --------------------- | -------------- |
-| **London-NY Overlap (9-14)** | Every 15-30 min           | `signal` or `minimal` | Low            |
-| **New York (14-18)**         | Every 20-30 min           | `signal` or `minimal` | Low            |
-| **London (6-9)**             | Every 30-45 min           | `minimal`             | Very Low       |
-| **Asian (0-6)**              | Every 1-2 hours           | `minimal`             | Minimal        |
-| **Weekend**                  | Every 3-4 hours           | `minimal`             | Minimal        |
-
-#### 🎯 **Hybrid Approach (Recommended)**
-
-1. **Use `minimal` mode** for frequent monitoring (every 15-30 minutes)
-2. **Use `signal` mode** for detailed analysis when `minimal` shows interesting signals
-3. **Use `analysis` mode** once per day for comprehensive market overview
-
-**Example Workflow:**
-
-```bash
-# Frequent monitoring during active hours
-python trader-agent.py --token SOL --mode minimal
-
-# Detailed analysis when minimal shows BUY signal
-python trader-agent.py --token SOL --mode signal
-
-# Comprehensive overview once daily
-python trader-agent.py --token SOL --mode analysis
-```
-
-#### 📊 **Token Usage Comparison**
-
-| **Mode**       | **Gemini Calls** | **Tokens per Call** | **Daily Cost** | **Use Case**              |
-| -------------- | ---------------- | ------------------- | -------------- | ------------------------- |
-| **`minimal`**  | 0                | 0                   | Free           | High-frequency monitoring |
-| **`signal`**   | 1 per call       | ~2,000 tokens       | Low            | Detailed signals          |
-| **`analysis`** | 1 per call       | ~4,000 tokens       | Medium         | Comprehensive analysis    |
-
-#### ⚡ **Session-Aware Cost Optimization**
-
-The agent automatically detects trading sessions and can be scheduled accordingly:
-
-- **High Volatility** (London-NY overlap): More frequent `minimal` calls
-- **Low Volatility** (Asian session): Less frequent calls
-- **Weekend**: Very infrequent calls or disable monitoring
-
-This approach can reduce costs by **80-90%** while maintaining effective market awareness.
-
-1. Clone the repository:
-
-   ```bash
-   git clone <repository-url>
-   cd trader-agent
-   ```
-
-2. Install the required dependencies:
-   ```bash
-   pip install requests google-genai pandas ta python-dotenv feedparser
-   ```
-
-Or install all dependencies from the requirements.txt file:
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
-```
 
-## Configuration
-
-The script requires API keys for the following services:
-
-1. **Birdeye API Key** - For market data
-2. **Google Gemini API Key** - For AI analysis
-3. **CoinGecko API Key** - For additional market data
-
-After downloading the script, copy the `.env.example` file to create a new `.env` file:
-
-```bash
+# Set up environment
 cp .env.example .env
+# Edit .env with your SOLANA_PRIVATE_KEY
 ```
-
-Then edit the `.env` file to add your API keys:
-
-```env
-BIRDEYE_API_KEY=your-birdeye-api-key
-GEMINI_API_KEY=your-gemini-api-key
-COINGECKO_API_KEY=your-coingecko-api-key
-```
-
-The script will automatically load these values from the `.env` file.
-
-## Usage
 
 ### Basic Usage
 
-Run the trader agent with default settings (SOL on Solana) in signal mode:
-
 ```bash
-python trader-agent.py
+# Dry-run trend following (safe testing)
+python trader_agent_v3.py --strategy trend --dry-run
+
+# Live trading with trend strategy
+python trader_agent_v3.py --strategy trend
+
+# ORB strategy with trailing stops
+python trader_agent_v3.py --strategy orb --trailing-stop --trailing-distance 2.0
+
+# Custom capital allocation
+python trader_agent_v3.py --capital 5000 --token SOL
 ```
 
-Or specify a token and chain:
+## 📋 Command Line Options
 
+```
+usage: trader_agent_v3.py [-h] [--strategy {trend,orb}] [--token TOKEN]
+                         [--chain CHAIN] [--capital CAPITAL]
+                         [--dry-run] [--force-buy]
+                         [--trailing-stop] [--trailing-distance DISTANCE]
+
+VARMA Trading Agent V3
+
+options:
+  -h, --help            show this help message and exit
+  --strategy {trend,orb}
+                        Trading strategy (default: trend)
+  --token TOKEN         Token symbol to trade (default: SOL)
+  --chain CHAIN         Blockchain network (default: solana)
+  --capital CAPITAL     Total capital available (default: 1000)
+  --dry-run             Run in simulation mode (no real trades)
+  --force-buy           Force a BUY signal for testing execution
+  --trailing-stop       Enable trailing stop-loss for positions
+  --trailing-distance DISTANCE
+                        Trailing stop distance as percentage (default: 2.0)
+```
+
+## 📊 Strategy Explanations
+
+### Trend Following Strategy
+**Philosophy**: "Let winners run until stopped out or regime changes"
+
+- **Regime Classification**: 183-day MA position determines RISK_ON/OFF
+- **Entry**: Above trend in RISK_ON regime
+- **Exit**: Stop loss only (no profit targets)
+- **Holding Period**: Days to years (long-term)
+
+**Risk Multipliers**:
+- RISK_ON (above trend): 1.5x position size
+- RISK_OFF (below trend): 0.5x position size
+
+### ORB Strategy (Opening Range Breakout)
+**Philosophy**: "Ride institutional flow from opening range"
+
+- **Range Detection**: First 15 minutes of trading establishes range
+- **Breakout Logic**: Trade above/below range with momentum
+- **Intraday Focus**: Positions closed by session end
+- **Volume Confirmation**: Higher volume breakouts preferred
+
+## 🛡️ Risk Management
+
+### Kelly Criterion Implementation
+```python
+# Fractional Kelly with dampener
+kelly_fraction = win_rate - ((1 - win_rate) / risk_reward_ratio)
+fractional_kelly = max(0.0, kelly_fraction) * 0.25  # 0.25x dampener
+```
+
+### Position Sizing Example
+```
+Capital: $10,000
+Win Rate: 55%
+Avg Win: 8%, Avg Loss: 4%
+Stop Loss: 3%
+
+Kelly Size: $275 (2.75% of capital)
+RISK_ON Multiplier: $413 (4.13% final size)
+```
+
+### Safety Features
+- **Max Drawdown**: 45% portfolio limit (vs traditional 3%)
+- **Position Bounds**: 5-25% individual position limits
+- **Stop Loss Validation**: 0.5-10% range enforcement
+- **Portfolio Exposure**: 2x leverage maximum across all positions
+
+## 🎪 Order Camouflage
+
+### Why Camouflage?
+> *"Liquidity is scarce, and predatory algorithms hunt for obvious orders."*
+>
+> — Samir Varma
+
+### Camouflage Techniques
+- **Odd-Lot Sizing**: 0.3870 instead of 0.5 or 1.0 units
+- **Non-Round Stops**: $127.83 instead of $128.00
+- **Retail Appearance**: Orders designed to blend with retail traders
+- **Variable Timing**: Avoids predictable execution patterns
+
+### Example Camouflaged Order
+```
+Asset Quantity: 0.3930 (odd-lot)
+Position Size: $51.04
+Stop Loss: $128.0380 (non-round)
+Execution Style: camouflaged
+```
+
+## 📈 Performance Monitoring
+
+### Real-Time Dashboard
+```
+VARMA AGENT V3 - TRADING CYCLE RESULT
+==================================================
+Status: success
+Current Price: $132.2354
+Risk Regime: RISK_OFF
+Signal: BUY
+Entry Price: $132.2354
+Position Size: $50.00
+Stop Loss: $128.2683
+Confidence: 90%
+
+🛡️ CAMOUFLAGED ORDER DETAILS:
+   Asset Quantity: 0.3630 units
+   Position Size: $48.06
+   Stop: $128.1770
+```
+
+### Database Schema
+- **Trades**: Entry/exit prices, P&L, timestamps
+- **Signals**: Strategy decisions with confidence scores
+- **Portfolio Snapshots**: Equity curves and exposure tracking
+
+## 🔧 Configuration
+
+### Environment Variables (.env)
 ```bash
-python trader-agent.py --token ETH --chain ethereum
+# Required
+SOLANA_PRIVATE_KEY=your_private_key_here
+
+# Optional
+RPC_URL=https://mainnet.helius-rpc.com/?api-key=your_key
+LOG_LEVEL=INFO
 ```
 
-### Comprehensive Market Analysis Mode
+### Strategy Parameters
+```python
+VARMA_CONFIG = {
+    'VARMA_KELLY_DAMPENER': 0.25,      # Fractional Kelly multiplier
+    'VARMA_MAX_DRAWDOWN': 0.45,        # 45% max drawdown target
+    'VARMA_TREND_PERIOD': 200,         # Days for trend calculation
+    'VARMA_ORB_RANGE_MINUTES': 15,     # Opening range duration
+    'VARMA_RISK_ON_MULTIPLIER': 1.5,   # Above-trend sizing
+    'VARMA_RISK_OFF_MULTIPLIER': 0.5,  # Below-trend sizing
+}
+```
 
-Run the trader agent in comprehensive market analysis mode:
+## 🧪 Testing
 
+### Run All Tests
 ```bash
-python trader-agent.py --token SOL --chain solana --mode analysis
+# Unit tests
+python -m pytest tests/test_varma_risk_engine.py -v
+python -m pytest tests/test_smart_execution.py -v
+
+# Integration tests
+python -m pytest tests/test_integration.py -v
+
+# Noise stress tests
+python -m pytest tests/test_noise_stress.py -v
+
+# All tests
+python -m pytest tests/ -v
 ```
 
-### Command Line Arguments
+### Test Coverage: 59 Tests Passing
+- **Unit Tests**: 33 tests (individual components)
+- **Integration Tests**: 13 tests (end-to-end workflows)
+- **Noise Stress Tests**: 21 tests (robustness validation)
 
-- `--token` - Token symbol (e.g., SOL, BTC, ETH) - Default: SOL
-- `--chain` - Blockchain network (e.g., solana, ethereum, bsc) - Default: solana
-- `--mode` - Output mode: `signal` for trade signal, `analysis` for comprehensive market analysis - Default: signal
+## 🚨 Risk Warnings
 
-## How It Works
+### Important Disclaimers
+- **Live Trading Risk**: This system trades with real money
+- **Volatility**: Crypto markets can be extremely volatile
+- **No Guarantees**: Past performance ≠ future results
+- **Education Required**: Understand Varma's methodologies before use
 
-1. **Data Retrieval**: Fetches market data from Birdeye and OHLCV data from CoinGecko
-2. **Advanced Technical Analysis**: Calculates RSI, MACD, FVGs, liquidity levels, volume profiles, and market structure
-3. **AI Analysis**: Sends structured data to Gemini for trade signal or market analysis generation
-4. **Output**: Generates either BUY/SELL/HOLD signals or comprehensive market analysis
+### Safety Recommendations
+- Start with small capital amounts
+- Use dry-run mode extensively for testing
+- Monitor positions actively
+- Have emergency stop procedures
 
-## Output Modes
+## 🐛 Troubleshooting
 
-### Signal Mode (Default)
+### Common Issues
 
-Generates concise trade signals with:
+**"Insufficient data for trend calculation"**
+- Need at least 30 days of price history
+- Check data source connectivity
 
-- Coin symbol and current price
-- Action (BUY/SELL/HOLD)
-- Entry price
-- Stop loss
-- Take profit
-- Conviction score (1-100)
-- Reasoning from the AI
+**"Risk validation failed"**
+- Position size may exceed limits
+- Check capital allocation settings
 
-### Analysis Mode
+**"Jupiter API error"**
+- Check Solana RPC connectivity
+- Verify wallet has sufficient SOL for fees
 
-Generates comprehensive market analysis including:
-
-- ⚡ Live Market Overview with price, volume, and liquidity
-- 🔍 Price & Momentum Read across multiple timeframes
-- 💧 Liquidity & Order Flow analysis
-- 📊 Fair Value Gaps (FVGs) detection
-- 🧭 Trading Plan with entry/exit levels and risk-to-reward ratios
-- ✅ Analyst's Take with detailed market interpretation
-
-## Example Output
-
-### Signal Mode Output
-
-```
-    🧠 GEMINI HIGH-CONVICTION TRADE SIGNAL
-   COIN: SOL @ $222.66
-   ACTION: BUY
-   ENTRY PRICE: $222.00
-   STOP LOSS: $220.90
-   TAKE PROFIT: $231.30
-   CONVICTION: 85%
---------------------------------------------------
-   REASONING: The higher timeframe (HTF) trend for SOL remains Bullish, supported by an HTF RSI of 68.67. The current price has experienced a significant retracement from recent highs (last 10 close prices around 230-231), landing precisely on strong HTF and LTF liquidity support levels identified around 221.85 - 223.96. This aggressive move down is interpreted as a potential liquidity sweep below previous LTF lows, entering a key demand zone. Further reinforcing the bullish bias is a clear 'Bullish Crossover' on the MACD, indicating a shift in momentum, and increasing HTF volume, which adds conviction to a potential bounce. We anticipate a rebound from this demand zone to target previous resistance and liquidity levels.
+### Debug Mode
+```bash
+# Enable detailed logging
+export LOG_LEVEL=DEBUG
+python trader_agent_v3.py --dry-run
 ```
 
-### Analysis Mode Output
+## 📚 References
 
-```
-⚡ Live SOL Market Overview
-Current Price: $222.66 (Birdeye live)
-24h Change: 0.0%
-Volume (24h): ~$0.00 (0.0%)
-Liquidity: ~$21.48 Billion — High liquidity, indicating a healthy and actively traded market.
+- **Samir Varma's Books**:
+  - "Trading Systems and Money Management"
+  - "Forex Made Simple"
 
-🔍 Price & Momentum Read
-Timeframe | Change | Structure | Momentum
-1H | 0.71% | Broken Bearish / Retesting | Bullish (RSI 61.83)
-4H | 0.05% | Broken Bearish / Retesting | Bullish (RSI 68.67)
-12H | 0.0% | Broken Bearish / Retesting | Bullish (RSI 68.67)
-24H | 0.0% | Broken Bearish / Retesting | Bullish (RSI 68.67)
+- **Key Concepts**:
+  - Kelly Criterion for position sizing
+  - Regime classification for market timing
+  - Order camouflage for execution efficiency
 
-Short-term: SOL has seen a slight positive movement of 0.71% in the last hour and 0.05% over the past 4 hours, indicating a minor rebound from a recent significant downturn. Despite these slight upticks, the current price ($222.66) is notably below all recent short-term (LTF) swing lows ($228.47) and highs ($231.56). This suggests a break of short-term market structure to the downside. However, both the 14-period RSI (61.83) and a bullish MACD crossover signal strong underlying bullish momentum.
+## 🤝 Contributing
 
-[...] (Full analysis continues with all sections from the example)
-```
+1. Fork the repository
+2. Create a feature branch
+3. Add comprehensive tests
+4. Ensure all tests pass
+5. Submit a pull request
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## ⚠️ Legal Notice
+
+This software is for educational and research purposes. Trading cryptocurrencies involves substantial risk of loss and is not suitable for every investor. The user of this software assumes all responsibility for its use and any losses incurred.
+
+---
+
+**Built with ❤️ for quantitative trading excellence**

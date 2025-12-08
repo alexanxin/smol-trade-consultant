@@ -35,3 +35,14 @@ class Config:
     JUPITER_BASE_URL = "https://lite-api.jup.ag/swap/v1"
     BIRDEYE_BASE_URL = "https://public-api.birdeye.so"
     COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
+    
+    # Varma Strategy Parameters (V3)
+    VARMA_KELLY_DAMPENER = 0.25  # Use 1/4 Kelly for safety
+    VARMA_MAX_DRAWDOWN = 0.45    # 45% maximum drawdown target
+    VARMA_TREND_PERIOD = 200     # 200-period MA for regime classification
+    VARMA_ORB_RANGE_MINUTES = 15 # Opening range duration
+    VARMA_RISK_ON_MULTIPLIER = 1.5  # Increase size by 50% when above trend
+    VARMA_RISK_OFF_MULTIPLIER = 0.5 # Decrease size by 50% when below trend
+    VARMA_MIN_POSITION_SIZE = 0.05  # Minimum 5% of capital
+    VARMA_MAX_POSITION_SIZE = 0.25  # Maximum 25% of capital
+

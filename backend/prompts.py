@@ -105,9 +105,11 @@ OUTPUT FORMAT (JSON ONLY):
     "confidence": 0-100,
     "reasoning": "Concise explanation. EXPLICITLY CITE the technical level used for SL/TP.",
     "plan": {
-        "entry": float,
-        "stop_loss": float,
-        "take_profit": float
+        "entry": float,  # The specific price you intend to enter at (or current price)
+        "stop_loss": float,  # The specific price level for stop loss (NOT 0.0)
+        "take_profit": float,  # The specific price level for take profit (NOT 0.0)
+        "position_size_pct": float # Recommended size (e.g. 0.05 for 5%)
     }
 }
+IMPORTANT: Ensure 'stop_loss' and 'take_profit' are ACTUAL PRICE VALUES, not percentages or zeros.
 """

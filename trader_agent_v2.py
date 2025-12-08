@@ -32,7 +32,8 @@ load_dotenv()
 
 class TraderAgentV2:
     def __init__(self, execution_mode: str = None, dry_run: bool = True, token: str = Config.DEFAULT_TOKEN, 
-                 monitor_interval: int = Config.DEFAULT_MONITOR_INTERVAL, trailing_stop: bool = False, trailing_distance: float = Config.DEFAULT_TRAILING_DISTANCE):
+                 monitor_interval: int = Config.DEFAULT_MONITOR_INTERVAL, trailing_stop: bool = False, trailing_distance: float = Config.DEFAULT_TRAILING_DISTANCE,
+                 ai_provider: str = "auto"):
         logger.info("Initializing Trader Agent V2 (TiMi Architecture)...")
         self.execution_mode = execution_mode
         self.dry_run = dry_run
@@ -47,7 +48,8 @@ class TraderAgentV2:
             self.state_manager,
             execution_mode=execution_mode,
             dry_run=dry_run,
-            token=token
+            token=token,
+            ai_provider=ai_provider
         )
         
         # Initialize Position Monitor if execution mode enabled
@@ -256,6 +258,7 @@ class TraderAgentV2:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Trader Agent V2 - TiMi Architecture')
+    parser.add_argument("--ai-provider", type=str, default="auto", choices=["auto", "gemini", "lmstudio", "qwen"], help="AI Provider")
     parser.add_argument('--token', type=str, default=Config.DEFAULT_TOKEN, help='Token symbol to analyze (e.g., SOL, BONK, JUP)')
     parser.add_argument('--spot', action='store_true', help='Enable spot trading via Jupiter')
     parser.add_argument('--leverage', action='store_true', help='Enable leverage trading via Drift')
@@ -290,11 +293,12 @@ if __name__ == "__main__":
         logger.info("ℹ️  No execution mode specified. Running in analysis-only mode.")
     
     agent = TraderAgentV2(
-        execution_mode=execution_mode, 
-        dry_run=args.dry_run, 
+        execution_mode=execution_mode,
+        dry_run=args.dry_run,
         token=args.token,
         monitor_interval=args.monitor_interval,
         trailing_stop=args.trailing_stop,
-        trailing_distance=args.trailing_distance
+        trailing_distance=args.trailing_distance,
+        ai_provider=args.ai_provider
     )
     asyncio.run(agent.start())

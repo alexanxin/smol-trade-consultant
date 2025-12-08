@@ -135,9 +135,10 @@ class FundamentalAnalyst(BaseAgent):
         }
 
 class MasterTrader(BaseAgent):
-    def __init__(self):
+    def __init__(self, ai_provider: str = "auto"):
         super().__init__("MasterTrader")
         self.core_agent = TraderAgent()
+        self.ai_provider = ai_provider
 
     async def make_decision(self, debate_transcript: str) -> Dict[str, Any]:
         print(f"[{self.name}] Reviewing debate transcript...", flush=True)
@@ -145,8 +146,13 @@ class MasterTrader(BaseAgent):
         # The prompt is already imported
         from .prompts import MASTER_TRADER_PROMPT
         
-        # Call Gemini via core agent
+        # Call AI via core agent using the configured provider
         # We pass the transcript as the user prompt
-        decision = await self.core_agent._call_gemini(debate_transcript, MASTER_TRADER_PROMPT)
+        prompt = f"{MASTER_TRADER_PROMPT}\n\nTRANSCRIPT:\n{debate_transcript}"
+        
+        if self.ai_provider == "qwen":
+            decision = await self.core_agent._call_qwen_cli(prompt)
+        else:
+            decision = await self.core_agent._call_gemini(debate_transcript, MASTER_TRADER_PROMPT)
         
         return decision

@@ -84,10 +84,11 @@ class ExecutionEngine:
                 return await self._execute_spot_sell(token, kelly_size)
             elif self.mode == "leverage":
                 return await self._execute_leverage_open(token, "SHORT", kelly_size, plan)
-        elif action == "HOLD":
-            print(f"[ExecutionEngine] HOLD - No execution needed")
+        elif action == "HOLD" or action == "WAIT" or action is None:
+            print(f"[ExecutionEngine] {action or 'WAIT'} - No execution needed")
             return {"status": "hold"}
         else:
+            print(f"❌ ERROR: Unknown action: {action}")
             return {"error": f"Unknown action: {action}"}
 
     async def _execute_spot_buy(self, token: str, kelly_size: float) -> Dict[str, Any]:

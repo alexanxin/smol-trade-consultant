@@ -102,7 +102,7 @@ class TraderAgent:
             ohlcv_tasks = {
                 "ltf": self._fetch_ohlcv_coingecko(session, pool_address, chain, "minute", 5, 100),
                 "htf": self._fetch_ohlcv_coingecko(session, pool_address, chain, "hour", 1, 50),
-                "daily": self._fetch_ohlcv_coingecko(session, pool_address, chain, "day", 1, 30)
+                "daily": self._fetch_ohlcv_coingecko(session, pool_address, chain, "day", 1, 365)  # Increased from 30 to 365 days for 200-day MA
             }
 
             ohlcv_results = await asyncio.gather(*ohlcv_tasks.values())
@@ -147,17 +147,52 @@ class TraderAgent:
         return None
 
     async def _fetch_birdeye_market_data(self, session: aiohttp.ClientSession, token_address: str, chain: str) -> Dict[str, Any]:
-        url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+        # Try the token overview endpoint first (includes liquidity and volume)
+        overview_url = f"https://public-api.birdeye.so/defi/token_overview?address={token_address}"
         headers = {"X-API-KEY": self.birdeye_api_key, "X-CHAIN": chain}
+        
         try:
-            async with session.get(url, headers=headers) as response:
+            async with session.get(overview_url, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
-                    return data.get('data', {})
+                    token_data = data.get('data', {})
+                    
+                    # Extract the fields we need
+                    if token_data:
+                        return {
+                            'value': token_data.get('price'),
+                            'updateUnixTime': token_data.get('updateUnixTime'),
+                            'liquidity': token_data.get('liquidity'),
+                            'v24h': token_data.get('v24hUSD'),  # 24h volume in USD
+                            'priceChange24h': token_data.get('priceChange24h')
+                        }
                 else:
-                    logger.error(f"Birdeye API error: {response.status} - {await response.text()}")
+                    logger.warning(f"Birdeye token_overview failed: {response.status}, trying price endpoint...")
         except Exception as e:
-            logger.error(f"Error fetching Birdeye data: {e}")
+            logger.warning(f"Error fetching Birdeye token_overview: {e}, trying price endpoint...")
+        
+        # Fallback to price endpoint with include_liquidity parameter
+        price_url = f"https://public-api.birdeye.so/defi/price?address={token_address}&include_liquidity=true"
+        try:
+            async with session.get(price_url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    price_data = data.get('data', {})
+                    
+                    # Price endpoint doesn't have volume, so we'll need to fetch it separately if needed
+                    # For now, return what we have
+                    if price_data:
+                        return {
+                            'value': price_data.get('value'),
+                            'updateUnixTime': price_data.get('updateUnixTime'),
+                            'liquidity': price_data.get('liquidity'),
+                            'priceChange24h': price_data.get('priceChange24h')
+                        }
+                else:
+                    logger.error(f"Birdeye price API error: {response.status} - {await response.text()}")
+        except Exception as e:
+            logger.error(f"Error fetching Birdeye price data: {e}")
+        
         return {}
 
     async def _get_top_pool_coingecko(self, session: aiohttp.ClientSession, token_address: str, network: str) -> Optional[str]:
@@ -686,13 +721,64 @@ class TraderAgent:
         if feedback:
             prompt += f"\n\nIMPORTANT FEEDBACK FROM RISK MANAGER:\n{feedback}\n\nPlease refine your analysis and signal based on this feedback."
             
+        if provider == "qwen":
+            return await self._call_qwen_cli(prompt)
+            
+        # Default to Gemini
         model = genai.GenerativeModel(Config.MODEL_NAME)
         try:
             response = await model.generate_content_async(prompt)
-            return json.loads(response.text)
+            return self._parse_json_response(response.text)
         except Exception as e:
             logger.error(f"Error generating signal: {e}")
             return {"error": str(e)}
+
+    async def _call_qwen_cli(self, prompt: str) -> Dict[str, Any]:
+        """Call local Qwen CLI."""
+        import subprocess
+        
+        try:
+            logger.info("Calling local Qwen CLI...")
+            # qwen CLI expects input via stdin
+            process = await asyncio.create_subprocess_exec(
+                "qwen",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate(input=prompt.encode())
+            
+            if process.returncode != 0:
+                error_msg = stderr.decode()
+                logger.error(f"Qwen CLI error: {error_msg}")
+                return {"error": f"Qwen CLI failed: {error_msg}"}
+                
+            response_text = stdout.decode()
+            return self._parse_json_response(response_text)
+            
+        except Exception as e:
+            logger.error(f"Error calling Qwen CLI: {e}")
+            return {"error": str(e)}
+
+    def _parse_json_response(self, text: str) -> Dict[str, Any]:
+        """Helper to robustly parse JSON from AI response."""
+        try:
+            # Try direct parse
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Try to find JSON block
+            try:
+                start = text.find('{')
+                end = text.rfind('}') + 1
+                if start != -1 and end != -1:
+                    json_str = text[start:end]
+                    return json.loads(json_str)
+            except Exception:
+                pass
+                
+            logger.error(f"Failed to parse JSON from response: {text[:100]}...")
+            return {"error": "Failed to parse JSON response"}
 
     async def generate_comprehensive_analysis(self, analysis_result: Dict, provider: str = "gemini") -> Dict[str, Any]:
         prompt = self.generate_signal_prompt(analysis_result)
